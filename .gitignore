@@ -1,0 +1,43 @@
+# Local runs and user-generated content
+/runs/
+/**/runs/
+/HISTORY.md
+
+# Local Mato Blog Codex state (must never be committed)
+/.mato-blog-codex/
+/local/
+/profiles/
+/browser_profiles/
+naver_profiles.json
+secrets.json
+
+# Python environments and caches
+/.venv/
+/venv/
+**/__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local.json
+
+# Runtime output
+*.log
+*.tmp
+*.bak
+*.done
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini

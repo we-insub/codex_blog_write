@@ -1,0 +1,166 @@
+from __future__ import annotations
+
+import json
+import os
+import sys
+import unittest
+from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest import mock
+
+from _support import IsolatedMatoEnvironment, SCRIPTS_DIR
+
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import history
+import mato_common
+
+
+class HistoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.environment = IsolatedMatoEnvironment()
+        self.env = self.environment.__enter__()
+
+    def tearDown(self) -> None:
+        self.environment.__exit__(None, None, None)
+
+    def test_default_run_is_created_under_desktop_kst_date(self) -> None:
+        fixed = datetime(2026, 7, 22, 14, 5, 6, tzinfo=mato_common.KST)
+        with TemporaryDirectory() as temporary:
+            desktop = Path(temporary) / "Desktop"
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"MATO_RUNS_ROOT": "", "MATO_DESKTOP_ROOT": str(desktop)},
+                    clear=False,
+                ),
+                mock.patch.object(mato_common, "now_kst", return_value=fixed),
+                mock.patch.object(history, "now_kst", return_value=fixed),
+            ):
+                directory, _state = history.create_run(
+                    "서울맛집", "blog", 1, '프로필1 "서울맛집"'
+                )
+            self.assertEqual(directory.parent, desktop / "2026-07-22")
+            self.assertEqual(directory.name, "20260722_140506_서울맛집")
+            self.assertTrue((directory / "run.json").is_file())
+
+    def test_free_form_and_structured_secrets_are_redacted(self) -> None:
+        command = (
+            "작업 password=hunter2 token=abc123 cookie: session-value "
+            "Bearer abc.def.ghi sk-abcdefghijklmnop"
+        )
+        redacted = history.redact_sensitive(command)
+        for secret in ("hunter2", "abc123", "session-value", "abc.def.ghi", "sk-abcdefghijklmnop"):
+            self.assertNotIn(secret, redacted)
+        self.assertIn("[민감정보 삭제]", redacted)
+
+        structured = history.redact_sensitive(
+            {
+                "password": "secret-password",
+                "api_key": "secret-api-key",
+                "body": "경쟁 글 전체 원문",
+                "nested": {"html": "<p>raw</p>", "safe": "유지"},
+            }
+        )
+        serialized = json.dumps(structured, ensure_ascii=False)
+        self.assertNotIn("secret-password", serialized)
+        self.assertNotIn("secret-api-key", serialized)
+        self.assertNotIn("경쟁 글 전체 원문", serialized)
+        self.assertNotIn("<p>raw</p>", serialized)
+        self.assertEqual(structured["nested"]["safe"], "유지")
+
+    def test_composite_korean_and_basic_authorization_secrets_are_redacted(self) -> None:
+        command = (
+            "client_secret=client-value id_token=id-value auth_token=auth-value "
+            "pw=pw-value 비밀번호=한글암호 Authorization: Basic dXNlcjpwYXNz"
+        )
+        redacted = history.redact_sensitive(command)
+        for secret in (
+            "client-value",
+            "id-value",
+            "auth-value",
+            "pw-value",
+            "한글암호",
+            "dXNlcjpwYXNz",
+        ):
+            self.assertNotIn(secret, redacted)
+        self.assertIn("Authorization: Basic [민감정보 삭제]", redacted)
+
+        structured = history.redact_sensitive(
+            {
+                "oauth_client_secret_backup": "one",
+                "openid_id_token": "two",
+                "naver_auth_token": "three",
+                "account_pw": "four",
+                "비밀번호": "five",
+                "oauthClientSecret": "six",
+                "safe_label": "keep",
+            }
+        )
+        serialized = json.dumps(structured, ensure_ascii=False)
+        for secret in ("one", "two", "three", "four", "five", "six"):
+            self.assertNotIn(f'"{secret}"', serialized)
+        self.assertEqual(structured["safe_label"], "keep")
+
+    def test_create_run_uses_kst_local_paths_and_writes_both_histories(self) -> None:
+        run_dir = self.env.root / "explicit-run"
+        directory, state = history.create_run(
+            "서울 맛집", "blog", 3, "서울 맛집 token=do-not-store", run_dir=run_dir
+        )
+        self.assertEqual(directory, run_dir)
+        self.assertTrue((run_dir / "run.json").is_file())
+        self.assertTrue((run_dir / "HISTORY.md").is_file())
+        self.assertEqual(mato_common.global_history_path(), self.env.googleblog_home / "mato-blog-codex" / "HISTORY.md")
+        self.assertTrue(mato_common.global_history_path().is_file())
+        timestamp = datetime.fromisoformat(str(state["started_at"]))
+        self.assertEqual(timestamp.utcoffset().total_seconds(), 9 * 60 * 60)
+        self.assertEqual(state["request"]["image_mode"], "none")
+        contents = (run_dir / "HISTORY.md").read_text(encoding="utf-8")
+        self.assertIn("created", contents)
+        self.assertNotIn("do-not-store", contents)
+
+    def test_append_event_is_append_only_and_sanitizes_run_updates(self) -> None:
+        run_dir = self.env.root / "append-run"
+        history.create_run("키워드", "integrated", 1, "첫 명령", run_dir=run_dir)
+        first_text = (run_dir / "HISTORY.md").read_text(encoding="utf-8")
+        event = history.append_event(
+            run_dir,
+            "analysis_completed",
+            status="generated",
+            message="분석 token=hidden",
+            command="두 번째 password=hidden-password",
+            details={"count": 5, "article_text": "경쟁 원문"},
+            run_updates={"safe_field": "보존", "source_body": "원문 본문"},
+        )
+        second_text = (run_dir / "HISTORY.md").read_text(encoding="utf-8")
+        self.assertTrue(second_text.startswith(first_text))
+        self.assertEqual(event["sequence"], 2)
+        state = history.load_run(run_dir)
+        self.assertEqual(len(state["events"]), 2)
+        self.assertEqual(state["safe_field"], "보존")
+        serialized = json.dumps(state, ensure_ascii=False)
+        for secret in ("hidden-password", "hidden", "경쟁 원문", "원문 본문"):
+            self.assertNotIn(secret, serialized)
+
+    def test_reopening_explicit_run_adds_resume_event_without_overwrite(self) -> None:
+        run_dir = self.env.root / "resume-run"
+        history.create_run("키워드", "blog", 2, "처음", run_dir=run_dir)
+        _, resumed = history.create_run("다른 키워드", "blog", 9, "재개", run_dir=run_dir)
+        self.assertEqual([event["stage"] for event in resumed["events"]], ["created", "resumed"])
+        self.assertEqual(resumed["request"]["keyword"], "키워드")
+        self.assertEqual(resumed["request"]["versions"], 2)
+
+    def test_terminal_event_records_completion_and_elapsed_time(self) -> None:
+        run_dir = self.env.root / "complete-run"
+        history.create_run("키워드", "blog", 1, "명령", run_dir=run_dir)
+        history.append_event(run_dir, "finished", status="completed")
+        state = history.load_run(run_dir)
+        self.assertIn("completed_at", state)
+        self.assertGreaterEqual(state["elapsed_seconds"], 0)
+        self.assertIn("elapsed_seconds", state["events"][-1]["details"])
+
+
+if __name__ == "__main__":
+    unittest.main()
