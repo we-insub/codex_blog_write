@@ -10,7 +10,7 @@
 "서울 맛집" 1번 프로필, 블로그탭
 ```
 
-이 요청은 기본값 `1개 + 임시저장`으로 처리됩니다. `10개`를 명시하면 10개를 만들며, `발행`, `바로발행`, `자동발행`을 명시하면 같은 요청에서 공개 발행까지 진행합니다.
+이 요청은 기본값 `통합검색 + 10개 + 임시저장`으로 처리됩니다. 생성 수를 명시하면 정확히 그 수만큼 만들며, `발행`, `바로발행`, `자동발행`을 명시하면 같은 요청에서 공개 발행까지 진행합니다.
 
 아래 명령은 Codex 스킬이 내부에서 실행하거나 개발자가 상태를 진단할 때 사용합니다. 터미널 옵션의 검색 영역과 발행 방식은 영문 값을 사용합니다.
 
@@ -49,6 +49,15 @@ PC별 전용 가상환경과 필요한 패키지를 준비합니다. 저장소�
 & $MatoPython plugins/mato-blog-codex/scripts/profiles.py add --slot 1 --alias "업무용" --blog-url "https://blog.naver.com/example"
 ```
 
+`--blog-url`에는 `example`, `https://blog.naver.com/example`, `https://m.blog.naver.com/example` 중 하나를 사용할 수 있습니다. 저장할 때 블로그 URL은 `https://blog.naver.com/example`, 글쓰기 URL은 `https://blog.naver.com/example?Redirect=Write&`로 자동 정규화됩니다.
+
+여러 프로필은 슬롯별로 반복 등록합니다. 코드상 슬롯 최대 개수는 없지만 각 슬롯은 1 이상의 고유 정수여야 합니다.
+
+```powershell
+& $MatoPython plugins/mato-blog-codex/scripts/profiles.py add --slot 1 --alias "intp_kr" --blog-url "intp_kr"
+& $MatoPython plugins/mato-blog-codex/scripts/profiles.py add --slot 2 --alias "youtube_intp" --blog-url "youtube_intp"
+```
+
 별칭 또는 블로그 URL을 수정합니다.
 
 ```powershell
@@ -66,6 +75,18 @@ PC별 전용 가상환경과 필요한 패키지를 준비합니다. 저장소�
 ```powershell
 & $MatoPython plugins/mato-blog-codex/scripts/profiles.py check --slot 1 --login
 ```
+
+선택한 전용 Chrome 창을 loopback 연결기와 함께 열어두려면 `open`을 사용합니다. 이후 `check --login`과 `upload.py --execute`는 가능한 경우 이 창에 재연결합니다.
+
+```powershell
+& $MatoPython plugins/mato-blog-codex/scripts/profiles.py open --slots 1,2
+```
+
+`open`은 종료 명령이 아니라 창 유지 명령입니다. 업로드가 시작된 뒤 성공 URL 확인이 끝날 때까지 해당 창을 사용자가 닫거나 다른 URL로 이동하지 않아야 합니다. 창을 닫아도 디스크의 로그인 세션이 자동 삭제되지는 않지만 현재 업로드 연결은 끊깁니다.
+
+같은 `naver_N` 폴더가 연결기 없이 이미 열려 있으면 두 번째 Chrome을 강제로 실행하지 않고 프로필 잠금 오류를 냅니다. 해당 전용 창에 작성 중인 글이 없는지 확인하고 정상 종료한 뒤 `open`을 다시 실행합니다.
+
+각 네이버 계정에는 이름이 `제목을입력해주세요1:`인 내 템플릿과 `본문2:` 텍스트 블록이 필요합니다. 네이버 목록에서 마지막 콜론이 생략되어 보여도 같은 템플릿으로 인식합니다. 업로더는 템플릿을 불러온 뒤 제목 50ms, 본문 20ms 지연으로 실제 타이핑하며, 템플릿이 없으면 일반 붙여넣기로 폴백하지 않습니다.
 
 선택한 로컬 TXT 폴더를 Mato `_함축.txt` 형식으로 변환하려면, Codex에 “이 폴더를 글변환해줘”라고 요청합니다. 내부 도구를 직접 점검해야 하는 경우에는 행 배열 JSON을 전달합니다. 기존 결과 파일을 바꾸려면 `--overwrite`를 명시해야 합니다.
 

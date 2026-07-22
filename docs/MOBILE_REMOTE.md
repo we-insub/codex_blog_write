@@ -2,7 +2,7 @@
 
 [README로 돌아가기](../README.md)
 
-ChatGPT 모바일의 Remote를 사용하면 밖에서도 집이나 사무실의 Windows 호스트에 설치된 Mato Blog Codex를 자연어로 실행하고 진행 상황을 확인할 수 있습니다. 휴대폰이 네이버 작업을 직접 수행하는 것이 아니라, 연결된 호스트 PC가 저장소·플러그인·로컬 파일·Browser·Playwright 프로필을 제공합니다.
+ChatGPT 모바일의 Remote를 사용하면 밖에서도 집이나 사무실의 Windows 호스트에 설치된 Mato Blog Codex를 자연어로 실행하고 진행 상황을 확인할 수 있습니다. 휴대폰이 네이버 작업을 직접 수행하는 것이 아니라, 연결된 호스트 PC가 저장소·플러그인·로컬 파일·Browser·번호별 전용 Chrome 프로필을 제공합니다.
 
 OpenAI의 현재 Remote 동작과 설정은 [Remote connections 공식 문서](https://learn.chatgpt.com/docs/remote-connections)를 기준으로 합니다.
 
@@ -13,11 +13,11 @@ OpenAI의 현재 Remote 동작과 설정은 [Remote connections 공식 문서](h
 | ChatGPT 모바일 Remote | 명령 전송, 질문 응답, 승인, 결과 확인 | 같은 ChatGPT 계정·workspace |
 | Windows 호스트 | 저장소, Mato 플러그인, 파일, 스크립트와 로컬 도구 제공 | 호스트에만 존재 |
 | `@Browser` | 네이버 공개 검색 결과와 최대 5개 공개 글 조사 | 내장 Browser의 별도 프로필 |
-| Playwright `naver_N` | 네이버 글쓰기, 임시저장과 발행 | 로컬 프로필별 네이버 세션 |
+| 전용 Chrome `naver_N` | 네이버 글쓰기, 임시저장과 발행 | 로컬 프로필별 네이버 세션과 loopback 연결기 |
 
 Codex의 내장 Browser는 일반 Chrome과 분리된 프로필을 사용하며 기존 탭이나 로그인 세션을 자동 공유하지 않습니다. 자세한 동작은 [Browser 공식 문서](https://learn.chatgpt.com/docs/browser)를 참고하십시오. Codex cloud 환경의 브라우저 프로필도 호스트의 `naver_N`과 동일한 프로필이 아닙니다.
 
-따라서 공개 자료 조사는 `@Browser`, 네이버 계정 쓰기는 로컬 Playwright `naver_N`으로 명확히 나눕니다. `@Browser`에서 네이버에 로그인해도 업로드 프로필에는 반영되지 않으며, 업로드를 위해 내장 Browser 로그인 정보를 복사하지 않습니다.
+따라서 공개 자료 조사는 `@Browser`, 네이버 계정 쓰기는 로컬 전용 Chrome `naver_N`으로 명확히 나눕니다. `@Browser`에서 네이버에 로그인해도 업로드 프로필에는 반영되지 않으며, 업로드를 위해 내장 Browser 로그인 정보를 복사하지 않습니다.
 
 ## 준비 사항
 
@@ -27,7 +27,7 @@ Codex의 내장 Browser는 일반 Chrome과 분리된 프로필을 사용하며 
 - 이 GitHub 저장소와 설치된 Mato Blog Codex 플러그인
 - Plugins Directory에서 설치·활성화한 **Browser** 플러그인
 - 활성화된 Computer Use
-- 설치된 Chrome과 준비된 Playwright `naver_N` 프로필
+- 설치된 Chrome과 준비된 번호별 `naver_N` 프로필
 - 휴대폰과 같은 ChatGPT 계정·workspace 로그인
 - 최신 ChatGPT iOS 또는 Android 앱
 
@@ -72,8 +72,8 @@ Browser는 처음 방문하는 사이트에 대한 허용을 요청할 수 있�
 
 - 검색 영역: 블로그탭
 - 조사 자료: `@Browser`에 실제로 노출된 공개 글 최대 5개
-- 생성 수: 1개
-- 업로드 프로필: 로컬 Playwright `naver_1`
+- 생성 수: 10개
+- 업로드 프로필: 로컬 전용 Chrome `naver_1`
 - 저장 방식: 임시저장
 
 개수를 바꾸려면 명시합니다.
@@ -102,19 +102,20 @@ Remote 작업 동안 호스트는 다음 상태여야 합니다.
 - Remote Control이 켜져 있음
 - Browser와 Mato Blog Codex 플러그인이 활성화됨
 - Windows Computer Use 작업 중에는 세션이 잠금 해제됨
+- 업로드에 사용할 `naver_N` 전용 Chrome 창과 loopback 연결기가 열려 있음
 
 호스트가 잠들거나 네트워크가 끊기거나 앱이 종료되면 Remote도 중단됩니다. Windows의 Computer Use는 활성 데스크톱 전면에서 동작하므로, 작업 중에는 호스트 화면을 다른 용도로 조작하지 않는 것이 안전합니다.
 
-집을 떠나기 전에 필요한 `naver_N` 프로필에 직접 로그인하고 글쓰기 접근을 확인하십시오. 원격 작업 중 로그인 만료, MFA, CAPTCHA 또는 접근 제한이 발생하면 자동으로 풀거나 우회하지 않으며 사용자가 호스트에서 정상 절차로 해결할 때까지 중단합니다.
+집을 떠나기 전에 필요한 `naver_N` 전용 창을 열고 각 프로필에 직접 로그인한 뒤 글쓰기 접근과 `제목을입력해주세요1:` 내 템플릿을 확인하십시오. 원고 입력·이미지 업로드·발행 확인 중에는 호스트에서 해당 창을 닫거나 다른 페이지로 이동하지 마십시오. 원격 작업 중 로그인 만료, MFA, CAPTCHA 또는 접근 제한이 발생하면 자동으로 풀거나 우회하지 않으며 사용자가 호스트에서 정상 절차로 해결할 때까지 중단합니다.
 
 ## 개인정보와 안전
 
-- 휴대폰에는 네이버 쿠키나 Playwright 프로필을 복사하지 않습니다.
+- 휴대폰에는 네이버 쿠키나 `naver_N` Chrome 프로필을 복사하지 않습니다.
 - GitHub에는 프로필, 검색어, 생성 글, 실행 히스토리나 세션을 올리지 않습니다.
 - `@Browser`는 공개 조사에만 사용하고 네이버 계정 업로드는 `naver_N`으로 제한합니다.
 - 공개 발행은 모바일에서도 명시적으로 요청해야 하지만, 명시된 요청 뒤에 별도의 반복 확인은 요구하지 않습니다.
 - CAPTCHA, 접근 제한, 인증 절차를 우회하지 않습니다.
-- 출처 이미지 다운로드는 지원하지만 이미지 해시 변경·허위 EXIF 또는 메타데이터 생성은 지원하지 않습니다.
+- 본인 소유 또는 사용 허가 이미지의 다운로드·메타데이터 정리·Smart Editor 업로드를 지원하지만, 픽셀 은닉 변조·허위 EXIF 또는 메타데이터 생성은 지원하지 않습니다.
 
 ## 연결 문제
 
