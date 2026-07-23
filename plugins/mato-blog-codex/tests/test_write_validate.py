@@ -291,6 +291,19 @@ class ValidatePostsTests(unittest.TestCase):
         self.assertEqual(parsed["body_marker_count"], 1)
         self.assertEqual(parsed["headings"], ["첫째"])
 
+    def test_parser_preserves_body1_intro_and_body2_for_helper_upload(self) -> None:
+        parsed = validate_posts.parse_mato_text(
+            "제목을입력해주세요1: 영역 테스트\n\n"
+            "본문1:\n첫 번째 영역\n\n"
+            "인트로1:\n도입 영역\n\n"
+            "본문2:\n소제목본문 제목\n본문 영역"
+        )
+        self.assertEqual(parsed["body1_lines"], ["첫 번째 영역"])
+        self.assertEqual(parsed["intro_lines"], ["도입 영역"])
+        self.assertEqual(parsed["body2_lines"], ["소제목본문 제목", "본문 영역"])
+        self.assertEqual(parsed["body"], "소제목본문 제목\n본문 영역")
+        self.assertEqual(parsed["headings"], ["본문 제목"])
+
 
 if __name__ == "__main__":
     unittest.main()

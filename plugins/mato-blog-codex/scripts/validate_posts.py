@@ -20,28 +20,78 @@ except ImportError:
 
 
 TITLE_PREFIX = "제목을입력해주세요1:"
+BODY1_MARKER = "본문1:"
+INTRO_MARKER = "인트로1:"
 BODY_MARKER = "본문2:"
 HEADING_PREFIX = "ㅂㅂㅂ"
+HEADING_PREFIXES = (HEADING_PREFIX, "소제목")
 IMAGE_TAG_RE = re.compile(r"\[(image_([1-9]\d*)\.jpg)\]", re.IGNORECASE)
 
 
 def parse_mato_text(text: str) -> dict[str, Any]:
+    """Parse every Mato Helper editor region without flattening its actions.
+
+    The original Naver writer treats text before ``인트로1:``/``본문2:`` as
+    ``본문1`` content, then types ``인트로1`` and ``본문2`` into their own
+    template placeholders.  Keep those regions separate for upload while
+    retaining ``body`` as the validated ``본문2`` payload for compatibility.
+    """
+
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = normalized.splitlines()
     first = next((line.strip() for line in lines if line.strip()), "")
     title = first[len(TITLE_PREFIX):].strip() if first.startswith(TITLE_PREFIX) else ""
-    headings = [
-        line.strip()[len(HEADING_PREFIX):].strip()
-        for line in lines
-        if line.strip().startswith(HEADING_PREFIX)
-    ]
+
+    headings: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        for prefix in HEADING_PREFIXES:
+            if stripped.startswith(prefix):
+                headings.append(stripped[len(prefix):].strip())
+                break
+
+    def marker_indexes(marker: str) -> list[int]:
+        return [index for index, line in enumerate(lines) if line.strip() == marker]
+
+    body1_indexes = marker_indexes(BODY1_MARKER)
+    intro_indexes = marker_indexes(INTRO_MARKER)
+    body2_indexes = marker_indexes(BODY_MARKER)
+    body2_start = body2_indexes[0] if body2_indexes else len(lines)
+    intro_before_body2 = [index for index in intro_indexes if index < body2_start]
+    intro_start = intro_before_body2[0] if intro_before_body2 else body2_start
+    body1_before_intro = [index for index in body1_indexes if index < intro_start]
+
+    if body1_before_intro:
+        body1_lines = lines[body1_before_intro[0] + 1:intro_start]
+    else:
+        body1_lines = [
+            line
+            for line in lines[:intro_start]
+            if line.strip() and not line.strip().startswith(TITLE_PREFIX)
+        ]
+    intro_lines = lines[intro_start + 1:body2_start] if intro_before_body2 else []
+    body2_lines = lines[body2_start + 1:] if body2_indexes else []
+
+    def trim_trailing_blanks(values: list[str]) -> list[str]:
+        cleaned = list(values)
+        while cleaned and not cleaned[-1].strip():
+            cleaned.pop()
+        return cleaned
+
+    body1_lines = trim_trailing_blanks(body1_lines)
+    intro_lines = trim_trailing_blanks(intro_lines)
+    body2_lines = trim_trailing_blanks(body2_lines)
     marker_count = sum(1 for line in lines if line.strip() == BODY_MARKER)
-    body_start = next((i for i, line in enumerate(lines) if line.strip() == BODY_MARKER), -1)
-    body = "\n".join(lines[body_start + 1:]).strip() if body_start >= 0 else ""
+    body = "\n".join(body2_lines).strip()
     return {
         "title": title,
         "headings": headings,
+        "body1_marker_count": len(body1_indexes),
+        "intro_marker_count": len(intro_indexes),
         "body_marker_count": marker_count,
+        "body1_lines": body1_lines,
+        "intro_lines": intro_lines,
+        "body2_lines": body2_lines,
         "body": body,
         "text": normalized,
     }

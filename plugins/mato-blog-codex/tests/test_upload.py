@@ -94,6 +94,7 @@ class UploadPlanTests(unittest.TestCase):
 
     def test_mato_template_title_and_table_markers_match_helper_contract(self) -> None:
         self.assertEqual(upload.NAVER_TEMPLATE_NAME, "제목을입력해주세요1:")
+        self.assertEqual(upload.BODY_TYPING_DELAY_MS, 20)
         self.assertEqual(
             upload.NaverTextUploader._clean_title(
                 "제목을입력해주세요1: 사십 자보다 짧은 제목"
@@ -103,6 +104,137 @@ class UploadPlanTests(unittest.TestCase):
         self.assertIsNotNone(upload.TABLE_START_RE.match("표 5 x 2 시작"))
         self.assertIsNotNone(upload.TABLE_CELL_RE.match("(4,1) 배송 조건 확인"))
         self.assertIsNotNone(upload.TABLE_END_RE.match("표 5 x 2 끝"))
+
+    def test_editor_sections_preserve_helper_region_order(self) -> None:
+        parsed = {
+            "body1_lines": ["본문1 문장"],
+            "intro_lines": ["인트로 문장"],
+            "body2_lines": ["ㅂㅂㅂ소제목", "본문 문장"],
+        }
+        self.assertEqual(
+            upload._editor_sections(parsed),
+            [
+                ("본문1:", ["본문1 문장"]),
+                ("인트로1:", ["인트로 문장"]),
+                ("본문2:", ["ㅂㅂㅂ소제목", "본문 문장"]),
+            ],
+        )
+
+    def test_legacy_write_urls_are_normalized_like_helper(self) -> None:
+        self.assertEqual(
+            upload._normalize_naver_write_url(
+                "https://blog.naver.com/PostWriteForm.naver?categoryNo=7&blogId=owner1"
+            ),
+            "https://blog.naver.com/owner1?Redirect=Write&categoryNo=7",
+        )
+        self.assertEqual(
+            upload._normalize_naver_write_url(
+                "https://blog.naver.com/owner1/postwrite?categoryNo=7"
+            ),
+            "https://blog.naver.com/owner1?Redirect=Write&categoryNo=7",
+        )
+
+    def test_image_resolution_matches_helper_filename_fallbacks(self) -> None:
+        image_dir = self.env.root / "images"
+        image_dir.mkdir()
+        bracketed = image_dir / "[IMAGE_1.JPG]"
+        bracketed.write_bytes(b"image")
+        self.assertEqual(
+            upload._resolve_image_path(image_dir, "image_1.jpg"),
+            bracketed,
+        )
+        self.assertIsNotNone(upload.IMAGE_TAG_RE.fullmatch("[image_2.webp]"))
+
+    def test_process_lines_uses_toolbar_actions_url_paste_images_and_tables(self) -> None:
+        page = MagicMock()
+        uploader = upload.NaverTextUploader(page)
+        frame = MagicMock()
+        placeholder = MagicMock()
+        image_path = self.env.root / "image_1.jpg"
+        image_path.write_bytes(b"image")
+        lines = [
+            "!!",
+            "ㅂㅂㅂ제목형 소제목",
+            "표 1 x 1 시작",
+            "(0,0) 셀 내용",
+            "표 1 x 1 끝",
+            "[image_1.jpg]",
+            "https://example.com/link",
+            "일반 본문",
+        ]
+        with patch.object(uploader, "_exact_text", return_value=placeholder), patch.object(
+            uploader, "_clear_region_placeholder"
+        ) as clear_placeholder, patch.object(
+            uploader, "_apply_toolbar_token", return_value=True
+        ) as toolbar_action, patch.object(
+            uploader, "_insert_table"
+        ) as insert_table, patch.object(
+            uploader, "_upload_image"
+        ) as upload_image, patch.object(
+            upload, "_copy_to_clipboard", return_value=True
+        ):
+            first_text = uploader._process_lines(
+                frame, lines, upload.NAVER_BODY_PLACEHOLDER, self.env.root
+            )
+
+        clear_placeholder.assert_called_once_with(placeholder)
+        self.assertEqual(
+            [call.args[1:3] for call in toolbar_action.call_args_list],
+            [("!!", ""), ("ㅂㅂㅂ", "제목형 소제목")],
+        )
+        insert_table.assert_called_once_with(frame, 1, 1, {(0, 0): "셀 내용"})
+        upload_image.assert_called_once_with(image_path)
+        page.keyboard.press.assert_any_call("Control+V")
+        page.keyboard.type.assert_called_once_with(
+            "일반 본문", delay=upload.BODY_TYPING_DELAY_MS
+        )
+        self.assertEqual(first_text, "제목형 소제목")
+
+    def test_write_falls_back_to_default_editor_when_template_is_missing(self) -> None:
+        page = MagicMock()
+        uploader = upload.NaverTextUploader(page)
+        uploader.open_editor_fields = [MagicMock(), MagicMock(), False]
+        parsed = {
+            "body1_lines": ["본문1"],
+            "intro_lines": ["인트로"],
+            "body2_lines": ["본문2"],
+        }
+        with patch.object(uploader, "_replace_line"), patch.object(
+            uploader, "_exact_text", return_value=None
+        ), patch.object(
+            uploader, "_process_lines", return_value="본문1"
+        ) as process_lines, patch.object(
+            upload, "_verify_input", return_value=True
+        ), patch.object(
+            uploader, "_editor_contains", return_value=True
+        ):
+            uploader.write("제목", parsed, self.env.root)
+
+        process_lines.assert_called_once_with(
+            uploader.open_editor_fields[0],
+            ["본문1", "인트로", "본문2"],
+            upload.NAVER_FALLBACK_PLACEHOLDER,
+            self.env.root,
+        )
+
+    def test_missing_template_enters_fallback_mode(self) -> None:
+        uploader = upload.NaverTextUploader(MagicMock())
+        with patch.object(upload, "_find_visible", return_value=None):
+            self.assertFalse(uploader._apply_mato_template(MagicMock()))
+
+    def test_draft_save_retries_three_times_before_uncertain(self) -> None:
+        page = MagicMock()
+        uploader = upload.NaverTextUploader(page)
+        button = MagicMock()
+        find_results = [button, None, button, None, button, None]
+        with patch.object(upload, "_scopes", return_value=[page]), patch.object(
+            upload, "_find_visible", side_effect=find_results
+        ), patch.object(upload, "_wait_for_visible_feedback", return_value=False):
+            with self.assertRaises(upload.UploadError) as raised:
+                uploader.save_draft()
+
+        self.assertEqual(raised.exception.code, "save_unverified")
+        self.assertEqual(button.click.call_count, 3)
 
     def test_open_profile_context_reuses_live_connector(self) -> None:
         browser = object()

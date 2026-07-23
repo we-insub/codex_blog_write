@@ -1,13 +1,16 @@
-"""Plan and execute confirmed text-only Naver uploads with local profiles."""
+"""Plan and execute Mato-compatible Naver uploads with local profiles."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import platform
 import re
+import subprocess
 import sys
 import time
+import unicodedata
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -51,23 +54,42 @@ FATAL_CODES = {
     "image_upload_failed",
     "template_not_found",
 }
-IMAGE_TAG_RE = re.compile(r"^\s*\[(image_[1-9]\d*\.jpg)\]\s*$", re.IGNORECASE)
+IMAGE_TAG_RE = re.compile(
+    r"^\s*\[([^\]]+\.(jpg|jpeg|png|gif|webp))\]\s*$", re.IGNORECASE
+)
 TABLE_START_RE = re.compile(r"^\s*표\s+(\d+)\s*[xX×]\s*(\d+)\s+시작\s*$")
 TABLE_CELL_RE = re.compile(r"^\s*\((\d+)\s*,\s*(\d+)\)\s*(.*)$")
 TABLE_END_RE = re.compile(r"^\s*표\s+\d+\s*[xX×]\s*\d+\s+끝\s*$")
 NAVER_TEMPLATE_NAME = "제목을입력해주세요1:"
 NAVER_TITLE_PLACEHOLDER = "제목을입력해주세요1"
+NAVER_BODY1_PLACEHOLDER = "본문1:"
+NAVER_INTRO_PLACEHOLDER = "인트로1:"
 NAVER_BODY_PLACEHOLDER = "본문2:"
+NAVER_FALLBACK_PLACEHOLDER = "글감과 함께 나의 일상을 기록해보세요!"
 TITLE_TYPING_DELAY_MS = 50
 BODY_TYPING_DELAY_MS = 20
+PLACEHOLDER_TYPING_DELAY_MS = 30
+TABLE_DELAY_MS = 1_500
+TABLE_SELECT_DELAY_MS = 2_500
+TABLE_DELETE_DELAY_MS = 2_500
 RESTRICTION_TEXT = ("captcha", "자동입력 방지", "비정상적인 접근", "접근이 제한", "보안 확인")
 DRAFT_SUCCESS_SELECTORS = (
     "[role='alert']:has-text('임시저장이 완료되었습니다')",
     "[role='status']:has-text('임시저장이 완료되었습니다')",
+    "[role='alert']:has-text('임시 저장이 완료되었습니다')",
+    "[role='status']:has-text('임시 저장이 완료되었습니다')",
+    "[role='alert']:has-text('저장이 완료되었습니다')",
+    "[role='status']:has-text('저장이 완료되었습니다')",
+    "[role='alert']:has-text('저장되었습니다')",
+    "[role='status']:has-text('저장되었습니다')",
     ".se-toast:has-text('임시저장')",
     ".se-toast-message:has-text('임시저장')",
     ".toast:has-text('임시저장')",
     ".se-notification:has-text('임시저장')",
+    ".se-toast:has-text('저장')",
+    ".se-toast-message:has-text('저장')",
+    ".toast:has-text('저장')",
+    ".se-notification:has-text('저장')",
 )
 PUBLISH_SUCCESS_SELECTORS = (
     "[role='alert']:has-text('발행되었습니다')",
@@ -109,10 +131,120 @@ def _editor_lines(parsed: Mapping[str, Any]) -> list[str]:
     Smart Editor actions.  They must remain intact until the typing loop.
     """
 
-    lines = [line.rstrip() for line in str(parsed.get("body") or "").splitlines()]
+    source = parsed.get("body2_lines")
+    if isinstance(source, list):
+        lines = [str(line).rstrip() for line in source]
+    else:
+        lines = [line.rstrip() for line in str(parsed.get("body") or "").splitlines()]
     while lines and not lines[-1].strip():
         lines.pop()
     return lines
+
+
+def _section_lines(parsed: Mapping[str, Any], key: str) -> list[str]:
+    source = parsed.get(key)
+    if not isinstance(source, list):
+        return []
+    lines = [str(line).rstrip() for line in source]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def _editor_sections(parsed: Mapping[str, Any]) -> list[tuple[str, list[str]]]:
+    """Return the three template regions in Mato Helper typing order."""
+
+    return [
+        (NAVER_BODY1_PLACEHOLDER, _section_lines(parsed, "body1_lines")),
+        (NAVER_INTRO_PLACEHOLDER, _section_lines(parsed, "intro_lines")),
+        (NAVER_BODY_PLACEHOLDER, _editor_lines(parsed)),
+    ]
+
+
+def _copy_to_clipboard(value: str) -> bool:
+    """Copy one URL through the same native clipboard path as Mato Helper."""
+
+    try:
+        system = platform.system()
+        if system == "Darwin":
+            subprocess.run(["pbcopy"], input=value.encode("utf-8"), check=True)
+            return True
+        if system == "Windows":
+            subprocess.run(["clip"], input=value.encode("utf-16le"), check=True)
+            return True
+        for command in (["xclip", "-selection", "clipboard"], ["xsel", "-b", "-i"]):
+            try:
+                subprocess.run(command, input=value.encode("utf-8"), check=True)
+                return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def _resolve_image_path(asset_dir: Path, image_name: str) -> Path | None:
+    """Match Mato image tags across brackets, case, and Unicode normalization."""
+
+    direct = asset_dir / image_name
+    if direct.is_file():
+        return direct
+    bracketed = asset_dir / f"[{image_name}]"
+    if bracketed.is_file():
+        return bracketed
+
+    target = image_name.casefold()
+    target_nfc = unicodedata.normalize("NFC", target)
+    target_nfd = unicodedata.normalize("NFD", target)
+    try:
+        for candidate in asset_dir.iterdir():
+            if not candidate.is_file():
+                continue
+            folded = candidate.name.casefold()
+            stripped = folded.strip("[]")
+            if (
+                folded == target
+                or stripped == target
+                or unicodedata.normalize("NFC", folded) == target_nfc
+                or unicodedata.normalize("NFD", folded) == target_nfd
+                or unicodedata.normalize("NFC", stripped) == target_nfc
+                or unicodedata.normalize("NFD", stripped) == target_nfd
+            ):
+                return candidate
+    except OSError:
+        return None
+    return None
+
+
+def _is_repeated_separator(value: str) -> bool:
+    return len(value) >= 3 and len(set(value)) == 1 and not value[0].isalnum()
+
+
+def _normalize_naver_write_url(value: str) -> str:
+    """Accept the legacy and ``/postwrite`` URL forms supported by Mato Helper."""
+
+    write_url = str(value or "").strip()
+    legacy = re.search(
+        r"(?:https?://)?blog\.naver\.com/PostWriteForm\.naver\?(.*?)$",
+        write_url,
+        re.IGNORECASE,
+    )
+    postwrite = re.search(
+        r"(?:https?://)?blog\.naver\.com/([^/?\s]+)/postwrite/?(?:\?(.*))?$",
+        write_url,
+        re.IGNORECASE,
+    )
+    if legacy:
+        query = legacy.group(1)
+        blog_id = re.search(r"(?:^|&)blogId=([^&\s]+)", query, re.IGNORECASE)
+        if blog_id:
+            other = re.sub(r"(?:^|&)blogId=[^&]+", "", query, flags=re.IGNORECASE).strip("&")
+            suffix = f"&{other}" if other else ""
+            return f"https://blog.naver.com/{blog_id.group(1)}?Redirect=Write{suffix}"
+    if postwrite:
+        suffix = f"&{postwrite.group(2)}" if postwrite.group(2) else ""
+        return f"https://blog.naver.com/{postwrite.group(1)}?Redirect=Write{suffix}"
+    return write_url
 
 
 def _load_post_items(run_dir: Path, run: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -385,20 +517,6 @@ def _dismiss_unfinished_draft_prompt(page: Any) -> bool:
     return True
 
 
-def _fill_contenteditable(locator: Any, page: Any, value: str) -> None:
-    try:
-        locator.fill(value, timeout=5_000)
-        return
-    except Exception:
-        pass
-    locator.click(timeout=5_000)
-    try:
-        locator.press("Control+A")
-    except Exception:
-        pass
-    page.keyboard.insert_text(value)
-
-
 def _verify_input(locator: Any, expected: str) -> bool:
     needle = re.sub(r"\s+", "", expected)[:20]
     try:
@@ -423,9 +541,16 @@ def _wait_for_visible_feedback(page: Any, selectors: Sequence[str], timeout_ms: 
 
 
 class NaverTextUploader:
-    def __init__(self, page: Any, *, login_timeout_seconds: int = 300) -> None:
+    def __init__(
+        self,
+        page: Any,
+        *,
+        login_timeout_seconds: int = 300,
+        admin_subtitle_style: bool = False,
+    ) -> None:
         self.page = page
         self.login_timeout_seconds = max(30, min(int(login_timeout_seconds), 900))
+        self.admin_subtitle_style = bool(admin_subtitle_style)
 
     def _wait_for_manual_login(self) -> None:
         """Keep the visible profile window open until its user logs in normally."""
@@ -471,7 +596,9 @@ class NaverTextUploader:
             pass
         return None
 
-    def _apply_mato_template(self, frame: Any) -> None:
+    def _apply_mato_template(self, frame: Any) -> bool:
+        """Load Mato's own template, returning False for original-style fallback."""
+
         button = _find_visible(
             (frame,),
             (
@@ -481,20 +608,25 @@ class NaverTextUploader:
             timeout=3_000,
         )
         if button is None:
-            raise UploadError(
-                "Naver template button was not found.", code="template_not_found"
-            )
-        button.click(timeout=5_000)
+            return False
+        try:
+            button.click(timeout=5_000)
+        except Exception:
+            return False
         mine = _find_visible(
             (frame,),
-            ("button.se-tab-button[value='my']",),
+            (
+                "button.se-tab-button[value='my']",
+                "button:has-text('내 템플릿')",
+            ),
             timeout=3_000,
         )
         if mine is None:
-            raise UploadError(
-                "Naver's My Templates tab was not found.", code="template_not_found"
-            )
-        mine.click(timeout=5_000)
+            return False
+        try:
+            mine.click(timeout=5_000)
+        except Exception:
+            return False
         self.page.wait_for_timeout(1_000)
         target = None
         cards = frame.locator(
@@ -516,20 +648,35 @@ class NaverTextUploader:
         except Exception:
             target = None
         if target is None:
-            raise UploadError(
-                f"Naver template '{NAVER_TEMPLATE_NAME}' was not found.",
-                code="template_not_found",
+            for label in (
+                NAVER_TEMPLATE_NAME,
+                NAVER_TEMPLATE_NAME.rstrip(":：").strip(),
+            ):
+                target = self._exact_text(frame, label, timeout=1_000)
+                if target is not None:
+                    break
+        if target is None:
+            close_sidebar = _find_visible(
+                (frame,), ("button.se-sidebar-close-button",), timeout=1_000
             )
-        target.click(timeout=5_000)
+            if close_sidebar is not None:
+                close_sidebar.click(timeout=5_000)
+            return False
+        try:
+            target.click(timeout=5_000)
+        except Exception:
+            return False
         self.page.wait_for_timeout(2_000)
         close_sidebar = _find_visible(
             (frame,), ("button.se-sidebar-close-button",), timeout=1_000
         )
         if close_sidebar is not None:
             close_sidebar.click(timeout=5_000)
+        return True
 
     def open_editor(self, write_url: str) -> list[Any]:
-        self.page.goto(write_url, wait_until="domcontentloaded", timeout=60_000)
+        target_url = _normalize_naver_write_url(write_url)
+        self.page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
         self.page.wait_for_timeout(4_000)
         self._wait_for_manual_login()
         _check_restriction(self.page)
@@ -545,7 +692,7 @@ class NaverTextUploader:
         )
         if close_help is not None:
             close_help.click(timeout=5_000)
-        self._apply_mato_template(frame)
+        template_found = self._apply_mato_template(frame)
         scopes = (frame,)
         title = _find_visible(
             scopes,
@@ -557,13 +704,11 @@ class NaverTextUploader:
             ),
             timeout=3_000,
         )
-        body = self._exact_text(frame, NAVER_BODY_PLACEHOLDER, timeout=3_000)
-        if title is None or body is None:
+        if title is None:
             raise UploadError(
-                "The Mato template title/body placeholders were not found.",
-                code="template_not_found",
+                "Naver title editor was not found.", code="editor_structure_changed"
             )
-        return [frame, title, body]
+        return [frame, title, template_found]
 
     def _upload_image(self, image_path: Path) -> None:
         button = _find_visible(
@@ -616,7 +761,7 @@ class NaverTextUploader:
         if table_button is None:
             raise UploadError("Naver table button was not found.", code="editor_structure_changed")
         table_button.click(timeout=5_000)
-        self.page.wait_for_timeout(1_000)
+        self.page.wait_for_timeout(TABLE_DELAY_MS)
 
         def section() -> Any:
             return frame.locator("div.se-section-table").last
@@ -636,71 +781,117 @@ class NaverTextUploader:
 
         def reactivate() -> None:
             table().locator("td.se-cell").first.click(force=True, timeout=5_000)
-            self.page.wait_for_timeout(300)
+            self.page.wait_for_timeout(TABLE_DELAY_MS)
 
-        deadline = time.monotonic() + 8
-        while shape()[0] < rows and time.monotonic() < deadline:
-            before = shape()[0]
-            reactivate()
-            section().locator(
-                "ul.se-cell-controlbar-row li:last-child button.se-cell-add-button"
-            ).first.click(force=True, timeout=5_000)
-            self.page.wait_for_timeout(500)
-            if shape()[0] <= before:
-                self.page.wait_for_timeout(500)
+        def add_rows() -> None:
+            attempts = 0
+            limit = max(6, max(0, rows - shape()[0]) * 4)
+            while shape()[0] < rows and attempts < limit:
+                attempts += 1
+                before = shape()[0]
+                reactivate()
+                section().locator(
+                    "ul.se-cell-controlbar-row li:last-child button.se-cell-add-button"
+                ).first.click(force=True, timeout=5_000)
+                deadline = time.monotonic() + 3
+                while shape()[0] <= before and time.monotonic() < deadline:
+                    self.page.wait_for_timeout(200)
 
-        deadline = time.monotonic() + 8
-        while shape()[1] < cols and time.monotonic() < deadline:
-            before = shape()[1]
-            reactivate()
-            section().locator(
-                "ul.se-cell-controlbar-column li:last-child button.se-cell-add-button"
-            ).first.click(force=True, timeout=5_000)
-            self.page.wait_for_timeout(500)
-            if shape()[1] <= before:
-                self.page.wait_for_timeout(500)
-
-        deadline = time.monotonic() + 12
-        while shape()[1] > cols and time.monotonic() < deadline:
-            before = shape()[1]
-            all_rows = table().locator("tr.se-tr")
-            first_cell = all_rows.first.locator("td.se-cell").last
-            last_cell = all_rows.last.locator("td.se-cell").last
-            first_box = first_cell.bounding_box()
-            last_box = last_cell.bounding_box()
-            if not first_box or not last_box:
-                break
-            edge = 4
-            self.page.mouse.move(first_box["x"] + edge, first_box["y"] + edge)
-            self.page.mouse.down()
-            self.page.mouse.move(
-                last_box["x"] + last_box["width"] - edge,
-                last_box["y"] + last_box["height"] - edge,
-                steps=25,
-            )
-            self.page.mouse.up()
-            self.page.wait_for_timeout(300)
-            self.page.keyboard.press("Delete")
-            self.page.wait_for_timeout(600)
-            if shape()[1] >= before:
-                first_cell.click(force=True, timeout=5_000)
-                last_cell.click(modifiers=["Shift"], force=True, timeout=5_000)
+        def delete_rows() -> None:
+            attempts = 0
+            limit = max(6, max(0, shape()[0] - rows) * 4)
+            while shape()[0] > rows and attempts < limit:
+                attempts += 1
+                before = shape()[0]
+                last_row = table().locator("tr.se-tr").last
+                first_cell = last_row.locator("td.se-cell").first
+                last_cell = last_row.locator("td.se-cell").last
+                first_box = first_cell.bounding_box()
+                last_box = last_cell.bounding_box()
+                if not first_box or not last_box:
+                    break
+                self.page.wait_for_timeout(TABLE_SELECT_DELAY_MS)
+                self.page.mouse.move(
+                    first_box["x"] + first_box["width"] / 2,
+                    first_box["y"] + first_box["height"] / 2,
+                )
+                self.page.mouse.down()
+                self.page.mouse.move(
+                    last_box["x"] + last_box["width"] / 2,
+                    last_box["y"] + last_box["height"] / 2,
+                    steps=20,
+                )
+                self.page.mouse.up()
+                self.page.wait_for_timeout(TABLE_DELETE_DELAY_MS)
                 self.page.keyboard.press("Delete")
-                self.page.wait_for_timeout(600)
+                self.page.wait_for_timeout(TABLE_DELAY_MS)
+                if shape()[0] >= before:
+                    break
+                if shape()[0] > rows:
+                    reactivate()
 
-        # Naver occasionally removes the last row together with a dragged
-        # last-column selection.  Mato Helper re-checks the final shape, so
-        # restore any lost rows after column normalization before filling.
-        deadline = time.monotonic() + 8
-        while shape()[0] < rows and time.monotonic() < deadline:
-            before = shape()[0]
-            reactivate()
-            section().locator(
-                "ul.se-cell-controlbar-row li:last-child button.se-cell-add-button"
-            ).first.click(force=True, timeout=5_000)
-            self.page.wait_for_timeout(500)
-            if shape()[0] <= before:
+        def add_columns() -> None:
+            attempts = 0
+            limit = max(6, max(0, cols - shape()[1]) * 4)
+            while shape()[1] < cols and attempts < limit:
+                attempts += 1
+                before = shape()[1]
+                reactivate()
+                section().locator(
+                    "ul.se-cell-controlbar-column li:last-child button.se-cell-add-button"
+                ).first.click(force=True, timeout=5_000)
+                deadline = time.monotonic() + 3
+                while shape()[1] <= before and time.monotonic() < deadline:
+                    self.page.wait_for_timeout(200)
+
+        def delete_columns() -> None:
+            attempts = 0
+            limit = max(6, max(0, shape()[1] - cols) * 5)
+            while shape()[1] > cols and attempts < limit:
+                attempts += 1
+                before = shape()[1]
+                all_rows = table().locator("tr.se-tr")
+                first_cell = all_rows.first.locator("td.se-cell").last
+                last_cell = all_rows.last.locator("td.se-cell").last
+                first_box = first_cell.bounding_box()
+                last_box = last_cell.bounding_box()
+                if not first_box or not last_box:
+                    break
+                edge = 4
+                self.page.wait_for_timeout(TABLE_SELECT_DELAY_MS)
+                self.page.mouse.move(first_box["x"] + edge, first_box["y"] + edge)
+                self.page.mouse.down()
+                self.page.mouse.move(
+                    last_box["x"] + last_box["width"] - edge,
+                    last_box["y"] + last_box["height"] - edge,
+                    steps=25,
+                )
+                self.page.mouse.up()
+                self.page.wait_for_timeout(TABLE_DELETE_DELAY_MS)
+                self.page.keyboard.press("Delete")
                 self.page.wait_for_timeout(500)
+                if shape()[1] >= before:
+                    self.page.wait_for_timeout(TABLE_SELECT_DELAY_MS)
+                    first_cell.click(force=True, timeout=5_000)
+                    self.page.wait_for_timeout(250)
+                    last_cell.click(modifiers=["Shift"], force=True, timeout=5_000)
+                    self.page.wait_for_timeout(TABLE_DELETE_DELAY_MS)
+                    self.page.keyboard.press("Delete")
+                    self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(TABLE_DELAY_MS)
+                if shape()[1] > cols:
+                    reactivate()
+
+        reactivate()
+        add_rows()
+        delete_rows()
+        add_columns()
+        delete_columns()
+
+        # A dragged last-column selection can also remove a row.  Mato Helper
+        # rechecks and restores the target shape before typing cell contents.
+        add_rows()
+        delete_rows()
 
         if shape() != (rows, cols):
             raise UploadError(
@@ -716,9 +907,14 @@ class NaverTextUploader:
                     f"tbody tr.se-tr:nth-child({row + 1}) "
                     f"td.se-cell:nth-child({col + 1}) p.se-text-paragraph"
                 ).first
+                if paragraph.count() < 1:
+                    raise UploadError(
+                        f"Naver table cell is missing: ({row},{col}).",
+                        code="editor_structure_changed",
+                    )
                 paragraph.click(force=True, timeout=8_000)
                 self.page.keyboard.type(value, delay=BODY_TYPING_DELAY_MS)
-                self.page.wait_for_timeout(250)
+                self.page.wait_for_timeout(TABLE_DELAY_MS)
 
         box = section().bounding_box()
         if box:
@@ -729,6 +925,7 @@ class NaverTextUploader:
             self.page.wait_for_timeout(400)
         else:
             self.page.keyboard.press("ArrowDown")
+            self.page.wait_for_timeout(1_000)
         self.page.keyboard.press("Enter")
         self.page.wait_for_timeout(300)
 
@@ -744,32 +941,132 @@ class NaverTextUploader:
             pass
         return False
 
-    def write(self, title: str, parsed: Mapping[str, Any], asset_dir: Path) -> None:
-        frame, title_box, body_box = self.open_editor_fields
-        clean_title = self._clean_title(title)
-        self._replace_line(
-            title_box, clean_title, delay=TITLE_TYPING_DELAY_MS, backspace=False
-        )
-        title_placeholder = self._exact_text(
-            frame, NAVER_TITLE_PLACEHOLDER, timeout=2_000
-        )
-        if title_placeholder is not None:
-            self._replace_line(
-                title_placeholder,
-                clean_title,
-                delay=30,
-                backspace=True,
-            )
+    def _clear_region_placeholder(self, locator: Any) -> None:
+        """Clear a Mato body marker with the helper's click-selection sequence."""
 
-        body_box.click(timeout=5_000)
-        body_box.press("End")
-        body_box.press("Shift+Home")
-        body_box.press("Backspace")
+        locator.click(timeout=5_000)
+        box = locator.bounding_box()
+        if box:
+            self.page.mouse.dblclick(box["x"] + 5, box["y"] + 5)
+            self.page.keyboard.press("Backspace")
+            return
+        locator.press("End")
+        locator.press("Shift+Home")
+        locator.press("Backspace")
+
+    def _select_naver_paragraph_style(self, frame: Any, style_name: str) -> bool:
+        """Select the optional Smart Editor paragraph style used by Mato admin runs."""
+
+        style = str(style_name or "").strip()
+        if not style:
+            return False
+
+        def exact(selector: str, text: str) -> Any:
+            return frame.locator(selector).filter(
+                has_text=re.compile(rf"^\s*{re.escape(text)}\s*$")
+            ).first
+
+        opened = False
+        for label in ("본문", "소제목", "제목"):
+            for locator in (
+                exact("span.se-toolbar-label[data-role='label']", label),
+                frame.locator(
+                    f"button:has(span.se-toolbar-label[data-role='label']:text-is('{label}'))"
+                ).first,
+            ):
+                try:
+                    if locator.count() > 0 and locator.is_visible(timeout=1_000):
+                        locator.click(timeout=2_500)
+                        self.page.wait_for_timeout(400)
+                        opened = True
+                        break
+                except Exception:
+                    continue
+            if opened:
+                break
+        if not opened:
+            return False
+
+        for locator in (
+            exact("span.se-toolbar-option-label", style),
+            frame.locator(
+                f"button:has(span.se-toolbar-option-label:text-is('{style}'))"
+            ).first,
+        ):
+            try:
+                if locator.count() > 0 and locator.is_visible(timeout=2_000):
+                    locator.click(timeout=2_500)
+                    self.page.wait_for_timeout(400)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _apply_toolbar_token(self, frame: Any, token: str, content: str) -> bool:
+        """Apply Mato's ``!!``, ``ㅂㅂㅂ``, and ``소제목`` Smart Editor actions."""
+
+        if token in {"ㅂㅂㅂ", "소제목"} and self.admin_subtitle_style:
+            if self._select_naver_paragraph_style(frame, "소제목"):
+                if content:
+                    self.page.keyboard.type(content, delay=BODY_TYPING_DELAY_MS)
+                self.page.keyboard.press("Enter")
+                self.page.wait_for_timeout(400)
+                return True
+            return False
+
+        name = "horizontal-line" if token == "!!" else "quotation"
+        button = _find_visible(
+            (frame,),
+            (f"button[data-name='{name}'][data-value='default']",),
+            timeout=2_000,
+        )
+        if button is None:
+            return False
+        try:
+            button.click(timeout=5_000)
+            self.page.wait_for_timeout(1_000)
+            if name == "quotation" and content:
+                self.page.keyboard.type(content, delay=BODY_TYPING_DELAY_MS)
+                self.page.wait_for_timeout(1_000)
+                self.page.keyboard.press("ArrowDown")
+                self.page.wait_for_timeout(1_000)
+                self.page.keyboard.press("ArrowDown")
+                self.page.wait_for_timeout(1_000)
+                self.page.keyboard.press("Enter")
+                self.page.wait_for_timeout(300)
+            return True
+        except Exception:
+            return False
+
+    def _process_lines(
+        self,
+        frame: Any,
+        lines: Sequence[str],
+        start_placeholder: str,
+        asset_dir: Path,
+    ) -> str:
+        if not lines:
+            return ""
+        start = self._exact_text(frame, start_placeholder, timeout=3_000)
+        if start is None:
+            raise UploadError(
+                f"Naver editor placeholder was not found: {start_placeholder}",
+                code="template_not_found",
+            )
+        self._clear_region_placeholder(start)
+
+        first_meaningful = next((str(line).strip() for line in lines if str(line).strip()), "")
+        if (
+            self.admin_subtitle_style
+            and start_placeholder.startswith("본문2")
+            and first_meaningful.startswith(("ㅂㅂㅂ", "소제목"))
+        ):
+            self.page.wait_for_timeout(1_000)
 
         first_text = ""
         table_state: dict[str, Any] | None = None
-        for raw_line in _editor_lines(parsed):
-            line = raw_line.strip()
+        for raw_line in lines:
+            line = str(raw_line).strip()
             if table_state is None:
                 table_start = TABLE_START_RE.match(line)
                 if table_start:
@@ -796,53 +1093,93 @@ class NaverTextUploader:
                     )
                 continue
 
+            if not line:
+                self.page.keyboard.press("Enter")
+                self.page.wait_for_timeout(100)
+                continue
+
+            matched_token = next(
+                (token for token in ("!!", "ㅂㅂㅂ", "소제목") if line.startswith(token)),
+                None,
+            )
+            if matched_token is not None:
+                content = line[len(matched_token):].strip()
+                if self._apply_toolbar_token(frame, matched_token, content):
+                    if content and not first_text:
+                        first_text = content
+                    continue
+
+            if _is_repeated_separator(line):
+                continue
+
             image_match = IMAGE_TAG_RE.fullmatch(line)
             if image_match:
-                image_path = asset_dir / image_match.group(1)
-                if not image_path.is_file():
+                image_name = image_match.group(1)
+                image_path = _resolve_image_path(asset_dir, image_name)
+                if image_path is None:
                     raise UploadError(
-                        f"Referenced image is missing: {image_path.name}",
+                        f"Referenced image is missing: {image_name}",
                         code="image_upload_failed",
                     )
                 self._upload_image(image_path)
                 continue
 
-            if line.startswith("ㅂㅂㅂ"):
-                content = line[3:].strip()
-                quote = _find_visible(
-                    (frame,),
-                    ("button[data-name='quotation'][data-value='default']",),
-                    timeout=2_000,
-                )
-                if quote is None:
-                    raise UploadError(
-                        "Naver quotation button was not found.",
-                        code="editor_structure_changed",
-                    )
-                quote.click(timeout=5_000)
-                self.page.wait_for_timeout(1_000)
-                if content:
-                    self.page.keyboard.type(content, delay=BODY_TYPING_DELAY_MS)
-                    if not first_text:
-                        first_text = content
-                self.page.wait_for_timeout(1_000)
-                self.page.keyboard.press("ArrowDown")
-                self.page.wait_for_timeout(1_000)
-                self.page.keyboard.press("ArrowDown")
-                self.page.wait_for_timeout(1_000)
+            if line.casefold().startswith(("http://", "https://")):
+                pasted = _copy_to_clipboard(line)
+                if pasted:
+                    paste_key = "Meta+V" if platform.system() == "Darwin" else "Control+V"
+                    try:
+                        self.page.keyboard.press(paste_key)
+                    except Exception:
+                        pasted = False
+                if not pasted:
+                    self.page.keyboard.type(line, delay=BODY_TYPING_DELAY_MS)
                 self.page.keyboard.press("Enter")
-                self.page.wait_for_timeout(300)
+                self.page.wait_for_timeout(4_000)
                 continue
 
-            if line:
-                self.page.keyboard.type(line, delay=BODY_TYPING_DELAY_MS)
-                if not first_text:
-                    first_text = line
+            self.page.keyboard.type(line, delay=BODY_TYPING_DELAY_MS)
+            if not first_text:
+                first_text = line
             self.page.keyboard.press("Enter")
-            self.page.wait_for_timeout(200 if line else 100)
+            self.page.wait_for_timeout(200)
 
         if table_state is not None:
             raise UploadError("Mato table block was not closed.", code="editor_structure_changed")
+        return first_text
+
+    def write(self, title: str, parsed: Mapping[str, Any], asset_dir: Path) -> None:
+        frame, title_box, template_found = self.open_editor_fields
+        clean_title = self._clean_title(title)
+        self._replace_line(
+            title_box, clean_title, delay=TITLE_TYPING_DELAY_MS, backspace=False
+        )
+        title_placeholder = self._exact_text(
+            frame, NAVER_TITLE_PLACEHOLDER, timeout=2_000
+        )
+        if title_placeholder is not None:
+            self._replace_line(
+                title_placeholder,
+                clean_title,
+                delay=PLACEHOLDER_TYPING_DELAY_MS,
+                backspace=True,
+            )
+        first_text = ""
+        sections = _editor_sections(parsed)
+        if template_found:
+            for placeholder, lines in sections:
+                typed = self._process_lines(frame, lines, placeholder, asset_dir)
+                if typed and not first_text:
+                    first_text = typed
+        else:
+            fallback_lines = [line for _placeholder, lines in sections for line in lines]
+            first_text = self._process_lines(
+                frame,
+                fallback_lines,
+                NAVER_FALLBACK_PLACEHOLDER,
+                asset_dir,
+            )
+
         if not _verify_input(title_box, clean_title) or (
             first_text and not self._editor_contains(frame, first_text)
         ):
@@ -857,38 +1194,50 @@ class NaverTextUploader:
 
     def save_draft(self) -> dict[str, Any]:
         scopes = _scopes(self.page)
-        button = _find_visible(
-            scopes,
-            (
-                "button[data-click-area='tpb.save']",
-                "button:has(span:text-is('저장'))",
-                "button:has-text('임시저장')",
-            ),
-            timeout=2_000,
+        selectors = (
+            "button[data-click-area='tpb.save']",
+            "button:has(span:text-is('저장'))",
+            "button:has-text('저장')",
+            "a:has-text('임시저장')",
+            "button:has-text('임시저장')",
         )
-        if button is None:
-            raise UploadError("Draft save button was not found.", code="editor_structure_changed")
-        button.click(timeout=5_000)
-        self.page.wait_for_timeout(750)
-        dialog_button = _find_visible(
-            scopes,
-            (
-                "[role='dialog'] button:has-text('저장')",
-                "[role='dialog'] button:has-text('확인')",
-                ".se-popup-container button:has-text('저장')",
-                ".se-popup-container button:has-text('확인')",
-            ),
-            timeout=750,
-        )
-        if dialog_button is not None:
-            dialog_button.click(timeout=5_000)
-        verified = _wait_for_visible_feedback(self.page, DRAFT_SUCCESS_SELECTORS, 8_000)
-        if not verified:
-            raise UploadError(
-                "The draft button was clicked, but completion could not be verified. Check Naver manually.",
-                code="save_unverified",
+        clicked = False
+        for attempt in range(1, 4):
+            if attempt > 1:
+                self.page.wait_for_timeout(3_000)
+            button = _find_visible(scopes, selectors, timeout=2_500)
+            if button is None:
+                continue
+            try:
+                button.click(timeout=3_500)
+            except Exception:
+                try:
+                    button.click(timeout=3_500, force=True)
+                except Exception:
+                    continue
+            clicked = True
+            self.page.wait_for_timeout(750)
+            dialog_button = _find_visible(
+                scopes,
+                (
+                    "[role='dialog'] button:has-text('저장')",
+                    "[role='dialog'] button:has-text('확인')",
+                    ".se-popup-container button:has-text('저장')",
+                    ".se-popup-container button:has-text('확인')",
+                ),
+                timeout=2_000,
             )
-        return {"status": "success", "verified_url": None}
+            if dialog_button is not None:
+                dialog_button.click(timeout=5_000)
+            if _wait_for_visible_feedback(self.page, DRAFT_SUCCESS_SELECTORS, 5_000):
+                self.page.wait_for_timeout(3_000)
+                return {"status": "success", "verified_url": None}
+        if not clicked:
+            raise UploadError("Draft save button was not found.", code="editor_structure_changed")
+        raise UploadError(
+            "The draft button was clicked three times, but completion could not be verified. Check Naver manually.",
+            code="save_unverified",
+        )
 
     def publish(self) -> dict[str, Any]:
         scopes = _scopes(self.page)
