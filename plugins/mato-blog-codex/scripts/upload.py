@@ -14,6 +14,7 @@ import unicodedata
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import unquote, urlparse
 
 try:
     from .collect import normalize_naver_post_url
@@ -60,6 +61,7 @@ IMAGE_TAG_RE = re.compile(
 TABLE_START_RE = re.compile(r"^\s*표\s+(\d+)\s*[xX×]\s*(\d+)\s+시작\s*$")
 TABLE_CELL_RE = re.compile(r"^\s*\((\d+)\s*,\s*(\d+)\)\s*(.*)$")
 TABLE_END_RE = re.compile(r"^\s*표\s+\d+\s*[xX×]\s*\d+\s+끝\s*$")
+NAVER_TEXT_LINK_RE = re.compile(r"^\[\[MATO_TEXT_LINK\|([^|]*)\|([^|]*)\]\]$")
 NAVER_TEMPLATE_NAME = "제목을입력해주세요1:"
 NAVER_TITLE_PLACEHOLDER = "제목을입력해주세요1"
 NAVER_BODY1_PLACEHOLDER = "본문1:"
@@ -181,6 +183,24 @@ def _copy_to_clipboard(value: str) -> bool:
     except Exception:
         pass
     return False
+
+
+def _parse_naver_text_link_line(line: str) -> tuple[str, str] | None:
+    """Parse OneQ's explicit SmartEditor text-link instruction.
+
+    The marker is generated only after a verified WordPress URL exists.  It is
+    not ordinary manuscript text and is never sent to Naver as literal text.
+    """
+
+    match = NAVER_TEXT_LINK_RE.fullmatch(str(line or "").strip())
+    if match is None:
+        return None
+    label = unquote(match.group(1)).strip() or "더 자세한 정보 보러가기"
+    target = unquote(match.group(2)).strip()
+    parsed = urlparse(target)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return label, target
 
 
 def _resolve_image_path(asset_dir: Path, image_name: str) -> Path | None:
@@ -731,6 +751,57 @@ class NaverTextUploader:
                 f"Could not upload image: {image_path.name}", code="image_upload_failed"
             ) from exc
 
+    def _insert_text_link(self, frame: Any, label: str, url: str) -> None:
+        """Apply a URL to typed visible text through the SmartEditor link UI."""
+
+        safe_label = str(label or "").strip() or "더 자세한 정보 보러가기"
+        safe_url = str(url or "").strip()
+        try:
+            self.page.keyboard.type(safe_label, delay=BODY_TYPING_DELAY_MS)
+            self.page.keyboard.press("Shift+Home")
+            self.page.wait_for_timeout(200)
+            button = _find_visible(
+                (frame,),
+                (
+                    "button.se-link-toolbar-button[data-name='text-link']",
+                    "button[data-name='text-link']",
+                ),
+                timeout=3_000,
+            )
+            if button is None:
+                raise UploadError("Naver text-link toolbar button was not found.", code="editor_structure_changed")
+            button.click(force=True, timeout=5_000)
+            link_input = _find_visible(
+                (frame,),
+                (
+                    "input.se-custom-layer-link-input[data-role='input']",
+                    ".se-custom-layer-option-link input[type='url']",
+                ),
+                timeout=5_000,
+            )
+            if link_input is None:
+                raise UploadError("Naver text-link URL field was not found.", code="editor_structure_changed")
+            link_input.fill(safe_url, timeout=5_000)
+            apply_button = _find_visible(
+                (frame,),
+                (
+                    "button.se-custom-layer-link-apply-button[data-role='confirm']",
+                    ".se-custom-layer-option-link button[data-role='confirm']",
+                ),
+                timeout=2_000,
+            )
+            if apply_button is not None:
+                apply_button.click(force=True, timeout=5_000)
+            else:
+                link_input.press("Enter")
+            self.page.wait_for_timeout(500)
+            self.page.keyboard.press("End")
+            self.page.keyboard.press("Enter")
+        except UploadError:
+            raise
+        except Exception as exc:
+            raise UploadError("Could not apply the WordPress text link in Naver.", code="editor_structure_changed") from exc
+
     @staticmethod
     def _replace_line(locator: Any, value: str, *, delay: int, backspace: bool) -> None:
         locator.click(timeout=5_000)
@@ -1110,6 +1181,13 @@ class NaverTextUploader:
                     continue
 
             if _is_repeated_separator(line):
+                continue
+
+            text_link = _parse_naver_text_link_line(line)
+            if text_link is not None:
+                self._insert_text_link(frame, *text_link)
+                if not first_text:
+                    first_text = text_link[0]
                 continue
 
             image_match = IMAGE_TAG_RE.fullmatch(line)

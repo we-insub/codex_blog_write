@@ -29,6 +29,40 @@ $MatoPython = "$env:USERPROFILE\.googleblog\mato-blog-codex\.venv\Scripts\python
 
 PC별 전용 가상환경과 필요한 패키지를 준비합니다. 저장소를 처음 설치했거나 의존성이 변경된 뒤 한 번 실행합니다. 이후 명령은 의존성이 설치된 `$MatoPython`으로 실행합니다.
 
+## 선택형 OneQ 플랫폼 연동
+
+이 명령은 일반 사용자가 직접 실행하는 UI가 아니라 Codex가 자연어 요청을 처리할 때 쓰는 내부 경로입니다. 대상에 `wordpress` 또는 `blogspot`이 없으면 해당 설정·API를 요구하지 않으며, `--targets naver`는 기존 네이버 단독 흐름입니다.
+
+WordPress 앱 비밀번호와 Google OAuth Secret은 옵션으로 노출하지 않고 실행 중 보안 입력으로 받습니다. 결과 JSON과 `run.json`에는 비밀값을 출력하지 않습니다.
+
+```powershell
+& $MatoPython plugins/mato-blog-codex/scripts/integrations.py wordpress --site-url "https://example.com" --username "writer" --categories "여행,숙소" --tags "여행,호텔"
+& $MatoPython plugins/mato-blog-codex/scripts/integrations.py test-wordpress
+& $MatoPython plugins/mato-blog-codex/scripts/integrations.py blogspot --client-id "<Google-desktop-client-id>" --blog-id "<Blogger-blog-id>" --labels "travel,guide" --acknowledge-public-drive-images
+& $MatoPython plugins/mato-blog-codex/scripts/integrations.py authorize-blogspot --blog-id "<Blogger-blog-id>"
+& $MatoPython plugins/mato-blog-codex/scripts/integrations.py status
+```
+
+Blogspot은 OAuth 동의가 필요합니다. `authorize-blogspot`이 보이는 Google 브라우저 흐름을 한 번 열고 계정의 Blog ID 목록을 확인합니다. 이미지가 포함되면 Google Drive 파일을 공개 읽기 링크로 업로드하므로 `--acknowledge-public-drive-images` 확인 없이는 진행하지 않습니다.
+
+원본 URL부터 플랫폼 초안을 준비하는 내부 순서는 다음과 같습니다.
+
+```powershell
+& $MatoPython plugins/mato-blog-codex/scripts/oneq_pipeline.py prepare --url "https://example.com/my-post" --targets "wordpress,blogspot,naver" --naver-versions 3 --profiles 1,2,3 --mode publish --command "내 글을 모든 플랫폼에 발행"
+```
+
+Codex가 결과 폴더의 플랫폼별 프롬프트를 적용해 `platform-posts.json`을 만든 뒤 렌더링합니다. 그 다음 WordPress 공개 발행이 성공해야 링크를 Blogspot과 Naver에 넣습니다.
+
+```powershell
+& $MatoPython plugins/mato-blog-codex/scripts/oneq_pipeline.py render --run-dir "<RUN_DIR>" --input "<platform-posts.json>"
+& $MatoPython plugins/mato-blog-codex/scripts/oneq_pipeline.py publish-wordpress --run-dir "<RUN_DIR>" --status publish
+& $MatoPython plugins/mato-blog-codex/scripts/oneq_pipeline.py finalize-downstream --run-dir "<RUN_DIR>"
+& $MatoPython plugins/mato-blog-codex/scripts/oneq_pipeline.py publish-blogspot --run-dir "<RUN_DIR>" --status publish
+& $MatoPython plugins/mato-blog-codex/scripts/oneq_pipeline.py publish-naver --run-dir "<RUN_DIR>" --mode publish --confirm "<RUN_ID>"
+```
+
+네이버만이면 `--targets naver`로 준비·렌더링·`finalize-downstream`·`publish-naver`만 사용합니다. WordPress/Blogspot은 건너뛰며 그 API 설정도 필요 없습니다.
+
 ## 프로필
 
 기존 `naver_N` 폴더를 찾아 프로필 목록에 추가합니다.

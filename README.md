@@ -62,6 +62,8 @@ macOS 지원은 단순한 사용자 설정이 아니라 다음 코드 이식과 
 | 내 템플릿 | `제목을입력해주세요1:` 템플릿과 원고 영역 | 권장 | 네이버 계정당 1회 |
 | 공통 프롬프트 | `공통.txt`의 말투·구조·표·줄바꿈 규칙 검토 | 권장 | PC당 1회 |
 | 작업 옵션 | 검색 영역, 원고 수, 프로필 순서, 임시저장 또는 발행 | 작업별 | 요청할 때 |
+| WordPress (선택) | 사이트 URL, 사용자명, 애플리케이션 비밀번호 | WordPress 발행 때만 | WordPress 최초 1회 |
+| Blogspot (선택) | Google OAuth Client ID/Secret, Google 동의, Blog ID, 이미지 공개 공유 확인 | Blogspot 발행 때만 | Blogspot 최초 1회 |
 
 다음 값은 사용자가 계산하거나 입력하지 않습니다.
 
@@ -73,6 +75,77 @@ macOS 지원은 단순한 사용자 설정이 아니라 다음 코드 이식과 
 - 로그인 쿠키와 비밀번호: 설정 파일이나 Git에 저장하지 않음
 
 새 PC에는 다른 PC의 로그인 세션이 전달되지 않습니다. 같은 저장소를 설치하더라도 프로필 등록과 네이버 로그인은 PC마다 다시 해야 합니다.
+
+> **강의 안내 — Google OAuth는 블로그스팟(Blogger) 전용입니다.** `google-auth-oauthlib`, `google-api-python-client` 라이브러리는 선택 기능인 Blogspot 발행을 위해 함께 설치됩니다. 하지만 **네이버만 사용하거나 WordPress만 사용하는 사람은 Google OAuth Client ID/Secret, Google 로그인 동의, Blog ID를 설정할 필요가 없고 Google에 연결·인증도 하지 않습니다.** Blogspot 발행을 요청한 경우에만 해당 설정과 인증 창이 사용됩니다.
+
+## 선택형 OneQ 플랫폼 발행
+
+워드프레스와 블로그스팟은 네이버 기능의 필수 조건이 아닙니다. 사용자가 플랫폼을 말하지 않거나 `네이버만`이라고 요청하면 현재처럼 **URL → 새 네이버 원고 N개 → 번호 프로필 발행**만 진행하며, 워드프레스·블로그스팟 API 설정을 묻지 않습니다.
+
+| 요청 대상 | 실행 순서 | 처음 필요한 설정 |
+| --- | --- | --- |
+| 네이버만 | 원본 URL → 서로 다른 Naver 원고 → 프로필 1,2,3 | 네이버 프로필·로그인·템플릿만 |
+| 워드프레스만 | 원본 URL → WordPress HTML 재가공 → 설정한 상태로 업로드 | 사이트 홈 URL, 사용자명, 애플리케이션 비밀번호 |
+| 워드프레스 + 블로그스팟 | 원본 URL → WordPress 공개 발행 → Blogspot HTML 재가공·업로드 | WordPress 설정 + Google OAuth/Blog ID |
+| 워드프레스 + 블로그스팟 + 네이버 | 원본 URL → WordPress 공개 발행 → Blogspot → 서로 다른 Naver 원고 N개 → 번호 프로필 | 위 설정 + 네이버 프로필 |
+
+워드프레스를 선택하고 그 URL을 블로그스팟이나 네이버에 연결하는 작업은 WordPress가 **반드시 먼저 공개 발행**됩니다. WordPress가 공개 URL을 돌려주지 않으면 이후 단계는 실행하지 않습니다. 공개 발행은 자연어 요청에 `발행`, `바로 발행`, `자동발행`을 명시했을 때만 진행합니다.
+
+### 워드프레스 최초 설정
+
+사이트의 일반 로그인 비밀번호가 아닌 **WordPress 애플리케이션 비밀번호**를 사용합니다. WordPress 관리자 화면의 사용자 프로필에서 발급한 뒤, Codex에 다음 정보를 한 번만 설정해 달라고 요청합니다.
+
+- 사이트 홈 URL — `https://example.com`처럼 `/wp-admin` 없는 주소
+- WordPress 사용자명
+- 애플리케이션 비밀번호
+- 선택: 기본 카테고리, 태그, 단독 WordPress 작업의 기본 임시저장/발행 상태
+
+```text
+내 WordPress 연결을 설정해줘. 사이트는 https://example.com, 사용자명은 writer야.
+앱 비밀번호는 이 PC에서만 안전하게 입력할게. 카테고리는 여행, 숙소로 해줘.
+```
+
+### 블로그스팟 최초 설정
+
+이 항목은 **Google Blogspot(Blogger) 발행을 선택한 사용자만** 설정합니다. 네이버만 사용하거나 WordPress만 사용하는 경우에는 아래 OAuth 설정을 건너뜁니다.
+
+Blogspot 기능은 `google-auth-oauthlib`, `google-api-python-client` 라이브러리를 사용합니다. Google Cloud에서 만든 **데스크톱 OAuth 클라이언트 ID/Secret**, Google 로그인 동의, 업로드할 **Blog ID**, 선택 라벨이 필요합니다. 이미지가 있는 Blogspot 글은 Google Drive에 업로드한 뒤 `링크가 있는 모든 사용자` 읽기 권한으로 이미지를 표시하는 방식이라, 이 공개 공유 방식을 설정 시 명시적으로 확인합니다.
+
+```text
+내 Blogspot 연결을 설정하고 OAuth 인증을 진행해줘. Blog ID와 기본 라벨도 저장해줘.
+이미지용 Google Drive 파일이 공개 읽기 링크가 되는 방식도 확인했어.
+```
+
+OAuth 인증 창에서 Google 로그인을 마치면 사용 가능한 Blogspot 목록을 확인하고, 여러 개라면 사용할 Blog ID를 선택합니다.
+
+이 값과 OAuth 토큰은 `~/.googleblog/mato-blog-codex/integrations/`의 PC 로컬 영역에만 저장됩니다. 비밀값은 Windows 현재 사용자용 DPAPI로 보호하며, Git·실행 기록·원고 폴더에는 남기지 않습니다. 다른 PC로 파일을 복사해도 인증값은 재사용되지 않습니다.
+
+### 플랫폼별 프롬프트
+
+처음 플랫폼 작업을 준비하면 아래 편집 가능한 로컬 프롬프트가 자동으로 생성됩니다.
+
+```text
+~/.googleblog/mato-blog-codex/integrations/prompts/wordpress.txt
+~/.googleblog/mato-blog-codex/integrations/prompts/blogspot.txt
+~/.googleblog/mato-blog-codex/integrations/prompts/naver-from-wordpress.txt
+```
+
+WordPress는 SEO/AEO용 HTML 구조, Blogspot은 별도 HTML 글 구조, Naver는 서로 다른 Mato 원고와 SmartEditor 텍스트 링크 규칙을 각각 적용합니다. 이 파일들은 PC별 설정이라 저장소를 공유해도 다른 사용자에게 전달되지 않습니다.
+
+### 자연어 요청 예시
+
+```text
+https://example.com/my-travel-post
+내 글이야. 네이버용으로 서로 다른 글 3개를 만들어 프로필 1,2,3에 바로 발행해줘.
+```
+
+```text
+https://example.com/my-travel-post
+내 글이야. WordPress용으로 재가공해 먼저 발행하고,
+그 URL을 넣어 Blogspot에도 발행해. 이어서 Naver 원고 3개를 프로필 1,2,3에 바로 발행해줘.
+```
+
+원본 글이나 이미지가 본인 소유 또는 재사용 허가를 받은 자료인 경우에만 URL 다운로드와 이미지 업로드를 요청하십시오.
 
 ## 설치
 

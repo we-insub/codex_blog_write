@@ -1,15 +1,15 @@
 {
   "name": "mato-blog-codex",
-  "version": "0.1.0+codex.20260723002006",
-  "description": "Naver blog research, original Mato-format drafting, local profile management, and confirmed upload workflows for Codex.",
+  "version": "0.1.0+codex.20260724090255",
+  "description": "Original Mato drafting, local Naver profile publishing, and optional standalone WordPress/Blogspot OneQ publishing for Codex.",
   "author": {
     "name": "Mato Helper"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Mato Blog Codex",
-    "shortDescription": "Research Naver results and prepare original blog drafts.",
-    "longDescription": "Uses Codex Browser to research up to five visible Naver blog results, creates original Mato-format drafts, and saves them through numbered local Chrome profiles on the connected desktop host.",
+    "shortDescription": "Prepare original drafts and publish to optional Naver, WordPress, and Blogspot targets.",
+    "longDescription": "Uses Codex Browser for Naver research, supports user-owned URL rewriting, creates original Mato-format drafts, and publishes through numbered local Naver Chrome profiles with optional standalone WordPress and Blogspot stages.",
     "developerName": "Mato Helper",
     "category": "Productivity",
     "capabilities": [
