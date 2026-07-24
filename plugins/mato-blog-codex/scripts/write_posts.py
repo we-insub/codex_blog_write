@@ -51,13 +51,15 @@ def _string_list(value: object, *, field: str) -> list[str]:
 
 def render_mato_post(post: Mapping[str, Any]) -> tuple[str, str]:
     title = _clean_text(post.get("title"), field="title").replace("\n", " ")
+    body1 = _string_list(post.get("body1", []), field="body1")
     intro = _string_list(post.get("intro", []), field="intro")
+    body2_intro = _string_list(post.get("body2_intro", []), field="body2_intro")
     sections = post.get("sections")
     if not isinstance(sections, list) or not sections:
         raise ValueError(f"post '{title}' must contain a non-empty sections array")
 
     body_lines: list[str] = []
-    body_lines.extend(intro)
+    body_lines.extend(body2_intro)
     for section_index, section in enumerate(sections, start=1):
         if not isinstance(section, Mapping):
             raise ValueError(f"post '{title}' section {section_index} must be an object")
@@ -70,7 +72,13 @@ def render_mato_post(post: Mapping[str, Any]) -> tuple[str, str]:
         body_lines.extend(paragraphs)
 
     body = "\n".join(body_lines).strip()
-    rendered = f"제목을입력해주세요1: {title}\n\n본문2:\n{body}\n"
+    regions = [f"제목을입력해주세요1: {title}"]
+    if body1:
+        regions.append("본문1:\n" + "\n".join(body1))
+    if intro:
+        regions.append("인트로1:\n" + "\n".join(intro))
+    regions.append("본문2:\n" + body)
+    rendered = "\n\n".join(regions) + "\n"
     return title, rendered
 
 

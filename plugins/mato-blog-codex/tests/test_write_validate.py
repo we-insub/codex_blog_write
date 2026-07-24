@@ -62,6 +62,23 @@ class WritePostsTests(unittest.TestCase):
         self.assertEqual(state["generation"]["generated_count"], 3)
         self.assertEqual(len(state["generation"]["posts"]), 3)
 
+    def test_writer_preserves_body1_intro_and_body2_regions(self) -> None:
+        run_dir = self.env.root / "all-template-regions"
+        create_run(run_dir, versions=1)
+        input_path = self.env.root / "regions.json"
+        payload = generated_payload(1)
+        post = payload["posts"][0]  # type: ignore[index]
+        post["body1"] = ["본문1 영역"]
+        post["intro"] = ["인트로 영역"]
+        post["body2_intro"] = ["본문2 시작 문장"]
+        write_json(input_path, payload)
+
+        write_posts.write_posts(run_dir, input_path)
+        text = next((run_dir / "posts").rglob("*_함축.txt")).read_text(encoding="utf-8")
+        self.assertIn("본문1:\n본문1 영역", text)
+        self.assertIn("인트로1:\n인트로 영역", text)
+        self.assertIn("본문2:\n본문2 시작 문장", text)
+
     def test_rejects_count_mismatch_before_writing_posts(self) -> None:
         run_dir = self.env.root / "count-mismatch"
         create_run(run_dir, versions=2)

@@ -2,3 +2,5 @@ scrapling[fetchers]==0.4.11
 requests>=2.32,<3
 beautifulsoup4>=4.12,<5
 Pillow>=10,<13
+google-auth-oauthlib>=1.2,<2
+google-api-python-client>=2.0,<3

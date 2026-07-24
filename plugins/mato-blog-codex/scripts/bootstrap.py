@@ -57,7 +57,8 @@ def dependency_check(python: Path) -> tuple[bool, str]:
         "-c",
         "from scrapling.fetchers import DynamicSession; "
         "from playwright.sync_api import sync_playwright; "
-        "import requests; import bs4; from PIL import Image; print('ready')",
+        "import requests; import bs4; from PIL import Image; "
+        "import google_auth_oauthlib; import googleapiclient; print('ready')",
     ]
     completed = subprocess.run(command, capture_output=True, text=True, timeout=30)
     if completed.returncode == 0:

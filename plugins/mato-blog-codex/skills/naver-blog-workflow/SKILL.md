@@ -1,6 +1,6 @@
 ---
 name: naver-blog-workflow
-description: Research visible Naver integrated-search or blog-tab results, create multiple original Korean blog drafts in Mato _함축.txt format, manage numbered local Naver Chrome profiles, inspect execution history, and prepare or perform authorized draft/publish uploads. Use when a user mentions Mato Helper, 네이버 블로그, 블로그탭, 통합검색, _함축.txt, profile slots, 임시저장, 발행, 자동발행, or asks to resume a prior Mato blog run.
+description: Research visible Naver integrated-search or blog-tab results, create multiple original Korean blog drafts in Mato _함축.txt format, manage numbered local Naver Chrome profiles, optionally publish a user-owned URL through standalone WordPress and Blogspot stages, inspect execution history, and prepare or perform authorized draft/publish uploads. Use when a user mentions Mato Helper, 네이버 블로그, 블로그탭, 통합검색, _함축.txt, WordPress, 워드프레스, Blogspot, 블로그스팟, profile slots, 임시저장, 발행, 자동발행, or asks to resume a prior Mato blog run.
 ---
 
 # Naver Blog Workflow
@@ -17,6 +17,20 @@ Give the user a natural-language workflow, not a standalone program or CLI. Run 
 - For upload, require profile slots and an explicit `draft` or `publish` mode.
 
 Read [workflow-contract.md](references/workflow-contract.md) for CLI/data contracts. Read [generation-policy.md](references/generation-policy.md) before generating or revising posts.
+
+## Optional OneQ platform workflow
+
+Use this flow only when the user names WordPress or Blogspot. These platforms are optional: when neither is named, keep the ordinary Naver-only workflow and do not require WordPress or Google credentials.
+
+1. Accept only a URL the user owns or has permission to reuse. For source images, require the same ownership/permission before passing `--include-images --images-authorized`.
+2. Determine the explicit target list from `wordpress`, `blogspot`, and `naver`; default to `naver` when no platform is named. Set up only named integrations with `integrations.py`; never print or place application passwords, OAuth secrets, refresh tokens, cookies, or session data in a run, prompt, command history, or Git.
+3. Call `oneq_pipeline.py prepare` using the requested URL, targets, Naver version count, profile slots, and requested draft/publish mode. The script preserves only local run metadata and initializes the editable prompt packs. Read and apply the effective `wordpress`, `blogspot`, and `naver-from-wordpress` prompt files; do not replace them with an invented prompt.
+4. Create a local `platform-posts.json` with only the selected fields: `wordpress: {title, html}`, `blogspot: {title, html}`, and/or `naver_posts: [{title, body1?, intro?, body2_intro?, sections}]`. Every platform draft must be newly written: do not translate or sentence-spin the source or another platform's draft, and do not invent personal experience.
+5. Call `oneq_pipeline.py render`. If WordPress and a downstream platform are both selected, public WordPress publication is the required first external write. Do it only when the user used an explicit publish phrase. Stop if WordPress does not return a verified public URL; do not publish downstream content without it.
+6. After successful WordPress publication, call `oneq_pipeline.py finalize-downstream`. It appends the public WordPress link to Blogspot and places a `MATO_TEXT_LINK` instruction in each Naver draft. The Naver uploader must type the label, select it, and use SmartEditor’s text-link UI; it must not paste the marker or an entire manuscript.
+7. Publish Blogspot only if selected and authorized. If the article uses source images, require the saved public-Drive-image acknowledgement before uploading. Then check each requested Naver profile is `ready`, plan and execute the existing Naver uploader. Keep its Chrome windows open throughout typing and verification.
+
+The standalone scripts in this plugin are the only runtime. `google-blog-auto` must never be imported, executed, or used as a data/configuration dependency.
 
 ## Execute a writing run
 
