@@ -9,6 +9,7 @@ No cookies, credentials, or browser storage values are copied or printed.
 from __future__ import annotations
 
 import os
+import platform
 import socket
 import subprocess
 import time
@@ -19,18 +20,43 @@ from typing import Any, Mapping
 DEVTOOLS_ACTIVE_PORT = "DevToolsActivePort"
 
 
-def find_chrome_executable() -> Path:
-    """Return the installed Google Chrome executable on Windows."""
+def chrome_executable_candidates(system: str | None = None) -> tuple[Path, ...]:
+    """Return platform-specific Google Chrome locations in preference order."""
 
-    candidates = []
-    for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
-        root = os.environ.get(env_name)
-        if root:
-            candidates.append(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe")
+    system = system or platform.system()
+    candidates: list[Path] = []
+    if system == "Windows":
+        for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+            root = os.environ.get(env_name)
+            if root:
+                candidates.append(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe")
+    elif system == "Darwin":
+        candidates.extend(
+            (
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            )
+        )
+    else:
+        candidates.extend(
+            (
+                Path("/usr/bin/google-chrome"),
+                Path("/usr/bin/google-chrome-stable"),
+                Path("/snap/bin/chromium"),
+            )
+        )
+    return tuple(candidates)
+
+
+def find_chrome_executable() -> Path:
+    """Return the installed Google Chrome executable on supported desktops."""
+
+    system = platform.system()
+    candidates = chrome_executable_candidates(system)
     for candidate in candidates:
         if candidate.is_file():
             return candidate
-    raise RuntimeError("설치된 Google Chrome을 찾지 못했습니다.")
+    raise RuntimeError(f"{system}에서 설치된 Google Chrome을 찾지 못했습니다.")
 
 
 def connector_endpoint(profile_path: str | Path) -> str | None:
@@ -50,6 +76,34 @@ def connector_endpoint(profile_path: str | Path) -> str | None:
     except OSError:
         return None
     return f"http://127.0.0.1:{port}"
+
+
+def clear_stale_macos_profile_lock(profile_path: Path) -> bool:
+    """Remove only a dead macOS Chrome instance lock for this exact profile."""
+
+    if platform.system() != "Darwin":
+        return False
+    lock = profile_path / "SingletonLock"
+    if not lock.is_symlink():
+        return False
+    try:
+        target = os.readlink(lock)
+        pid = int(target.rsplit("-", 1)[1])
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        pass
+    except (OSError, ValueError, IndexError):
+        return False
+    else:
+        return False
+
+    for filename in ("SingletonLock", "SingletonCookie", "SingletonSocket", DEVTOOLS_ACTIVE_PORT):
+        candidate = profile_path / filename
+        try:
+            candidate.unlink()
+        except FileNotFoundError:
+            continue
+    return True
 
 
 def open_profile_browser(
@@ -72,30 +126,42 @@ def open_profile_browser(
 
     # A live non-connector Chrome cannot be attached safely.  Do not attempt a
     # second launch against its locked user-data directory.
-    if (profile_path / "SingletonLock").exists():
+    lock = profile_path / "SingletonLock"
+    if os.path.lexists(lock) and clear_stale_macos_profile_lock(profile_path):
+        lock = profile_path / "SingletonLock"
+    if os.path.lexists(lock):
         raise RuntimeError(
             f"프로필 {profile['slot']}이 연결기 없이 이미 열려 있습니다. "
             "해당 전용 창만 닫은 뒤 다시 열어주세요."
         )
 
-    chrome = find_chrome_executable()
     target_url = str(profile.get("write_url") or profile.get("blog_url") or "https://www.naver.com")
+    chrome = find_chrome_executable()
+    chrome_args = [
+        f"--user-data-dir={profile_path}",
+        "--remote-debugging-address=127.0.0.1",
+        "--remote-debugging-port=0",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--new-window",
+        target_url,
+    ]
     creationflags = 0
     if os.name == "nt":
         creationflags = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) | int(
             getattr(subprocess, "DETACHED_PROCESS", 0)
         )
+    if platform.system() == "Darwin":
+        # macOS can terminate a directly spawned app-bundle executable after it
+        # forwards the startup request. ``open -na`` keeps this profile in its
+        # own Chrome app instance while retaining the requested data directory.
+        command = ["/usr/bin/open", "-na", "Google Chrome", "--args", *chrome_args]
+        exits_after_launch = True
+    else:
+        command = [str(chrome), *chrome_args]
+        exits_after_launch = False
     process = subprocess.Popen(
-        [
-            str(chrome),
-            f"--user-data-dir={profile_path}",
-            "--remote-debugging-address=127.0.0.1",
-            "--remote-debugging-port=0",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--new-window",
-            target_url,
-        ],
+        command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -113,7 +179,7 @@ def open_profile_browser(
                 "connector_ready": True,
                 "process_id": int(process.pid),
             }
-        if process.poll() is not None:
+        if not exits_after_launch and process.poll() is not None:
             break
         time.sleep(0.2)
     raise RuntimeError(f"프로필 {profile['slot']} Chrome 연결기가 준비되지 않았습니다.")

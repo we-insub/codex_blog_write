@@ -25,7 +25,7 @@ try:
         persistent_login_ready,
     )
     from .profiles import get_profile, round_robin_assign
-    from .profile_connector import connect_profile_context
+    from .naver_profile_runtime import launch_mato_profile_context
     from .validate_posts import parse_mato_text, verify_validation_manifest
 except ImportError:
     from collect import normalize_naver_post_url  # type: ignore[no-redef]
@@ -37,7 +37,7 @@ except ImportError:
         persistent_login_ready,
     )
     from profiles import get_profile, round_robin_assign  # type: ignore[no-redef]
-    from profile_connector import connect_profile_context  # type: ignore[no-redef]
+    from naver_profile_runtime import launch_mato_profile_context  # type: ignore[no-redef]
     from validate_posts import parse_mato_text, verify_validation_manifest  # type: ignore[no-redef]
 
 
@@ -72,7 +72,7 @@ PLACEHOLDER_TYPING_DELAY_MS = 30
 TABLE_DELAY_MS = 1_500
 TABLE_SELECT_DELAY_MS = 2_500
 TABLE_DELETE_DELAY_MS = 2_500
-RESTRICTION_TEXT = ("captcha", "자동입력 방지", "비정상적인 접근", "접근이 제한", "보안 확인")
+RESTRICTION_TEXT = ("비정상적인 접근이 감지", "접근이 제한되었습니다", "자동입력 방지문자를 입력")
 DRAFT_SUCCESS_SELECTORS = (
     "[role='alert']:has-text('임시저장이 완료되었습니다')",
     "[role='status']:has-text('임시저장이 완료되었습니다')",
@@ -1448,14 +1448,7 @@ def resolve_uncertain_upload(
 
 def _launch_context(playwright: Any, profile_path: str, *, headless: bool) -> Any:
     try:
-        return playwright.chromium.launch_persistent_context(
-            user_data_dir=profile_path,
-            channel="chrome",
-            headless=headless,
-            locale="ko-KR",
-            timezone_id="Asia/Seoul",
-            viewport={"width": 1280, "height": 1000},
-        )
+        return launch_mato_profile_context(playwright, profile_path, headless=headless)
     except Exception as exc:
         message = str(exc)
         lowered = message.lower()
@@ -1471,21 +1464,8 @@ def _open_profile_context(
     *,
     headless: bool,
 ) -> tuple[Any, bool, Any | None]:
-    """Reuse an open connector profile, otherwise launch an owned context."""
+    """Use the same persistent-context lifecycle as the profile login flow."""
 
-    try:
-        attached = connect_profile_context(playwright, profile_path)
-    except Exception as exc:
-        raise UploadError(
-            f"Could not attach to the open Chrome profile: {str(exc)[:300]}",
-            code="profile_connector_failed",
-        ) from exc
-    if attached is not None:
-        browser, context = attached
-        # Keep the CDP Browser wrapper strongly referenced for the entire
-        # upload.  Dropping it can tear down the connection while a long Mato
-        # typing/table sequence is still running, which closes the target.
-        return context, False, browser
     return _launch_context(playwright, profile_path, headless=headless), True, None
 
 

@@ -36,6 +36,13 @@ class BridgeError(RuntimeError):
     """Raised when the existing Mato Helper functions cannot be used."""
 
 
+def _write_utf8(path: Path, content: str) -> None:
+    """Write stable LF text on Python versions supported by macOS and Windows."""
+
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(content)
+
+
 def helper_root(value: str = "") -> Path:
     """Resolve and validate the existing Mato Helper source root."""
 
@@ -558,7 +565,7 @@ def _write_downloaded_hamchuk(
     if not any(line.startswith("제목을입력해주세요1:") for line in content.splitlines()[:5]):
         content = f"제목을입력해주세요1: {title}\n\n본문2:\n{content}"
     output = folder / f"{_safe_local_title(title, folder.name)}_함축.txt"
-    output.write_text(content.rstrip() + "\n", encoding="utf-8", newline="\n")
+    _write_utf8(output, content.rstrip() + "\n")
     return output
 
 
@@ -737,7 +744,7 @@ def _write_structured_original_hamchuk(
         image_names_by_url=image_names_by_url,
     )
     output = folder / f"{_safe_local_title(title, folder.name)}_원본_함축.txt"
-    output.write_text(content, encoding="utf-8", newline="\n")
+    _write_utf8(output, content)
     return output, title
 
 
@@ -958,7 +965,7 @@ def init_managed_prompt(root: Path, prompt_key: str, *, overwrite: bool = False)
     existed = destination.is_file()
     if overwrite or not existed:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(helper_body.rstrip() + "\n", encoding="utf-8", newline="\n")
+        _write_utf8(destination, helper_body.rstrip() + "\n")
     body = destination.read_text(encoding="utf-8-sig")
     return {
         "ok": True,
@@ -1013,7 +1020,7 @@ def export_generation_prompt(root: Path, prompt_key: str, output_path: str) -> d
     effective = date_context + body.rstrip() + "\n"
     destination = Path(output_path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(effective, encoding="utf-8", newline="\n")
+    _write_utf8(destination, effective)
     return {
         "ok": True,
         "kind": "naver_generation_prompt",

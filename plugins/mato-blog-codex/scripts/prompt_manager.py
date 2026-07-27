@@ -42,7 +42,8 @@ def init_prompt(prompt_key: str = "공통") -> dict[str, Any]:
     existed = path.is_file()
     if not existed:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(DEFAULT_COMMON_PROMPT.rstrip() + "\n", encoding="utf-8", newline="\n")
+        with path.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(DEFAULT_COMMON_PROMPT.rstrip() + "\n")
     text = path.read_text(encoding="utf-8-sig")
     return {
         "ok": True,
@@ -78,7 +79,8 @@ def export_prompt(output: str | Path, prompt_key: str = "공통") -> dict[str, A
     destination = Path(output).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     effective = context + body + "\n"
-    destination.write_text(effective, encoding="utf-8", newline="\n")
+    with destination.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(effective)
     return {
         "ok": True,
         "prompt_key": prompt_key or "공통",
