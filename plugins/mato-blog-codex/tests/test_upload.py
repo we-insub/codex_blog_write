@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import platform
 import sys
 import types
 import unittest
@@ -139,10 +140,9 @@ class UploadPlanTests(unittest.TestCase):
         image_dir.mkdir()
         bracketed = image_dir / "[IMAGE_1.JPG]"
         bracketed.write_bytes(b"image")
-        self.assertEqual(
-            upload._resolve_image_path(image_dir, "image_1.jpg"),
-            bracketed,
-        )
+        resolved = upload._resolve_image_path(image_dir, "image_1.jpg")
+        self.assertIsNotNone(resolved)
+        self.assertTrue(resolved.samefile(bracketed))
         self.assertIsNotNone(upload.IMAGE_TAG_RE.fullmatch("[image_2.webp]"))
 
     def test_process_lines_uses_toolbar_actions_url_paste_images_and_tables(self) -> None:
@@ -184,7 +184,8 @@ class UploadPlanTests(unittest.TestCase):
         )
         insert_table.assert_called_once_with(frame, 1, 1, {(0, 0): "셀 내용"})
         upload_image.assert_called_once_with(image_path)
-        page.keyboard.press.assert_any_call("Control+V")
+        paste_key = "Meta+V" if platform.system() == "Darwin" else "Control+V"
+        page.keyboard.press.assert_any_call(paste_key)
         page.keyboard.type.assert_called_once_with(
             "일반 본문", delay=upload.BODY_TYPING_DELAY_MS
         )
@@ -236,25 +237,20 @@ class UploadPlanTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "save_unverified")
         self.assertEqual(button.click.call_count, 3)
 
-    def test_open_profile_context_reuses_live_connector(self) -> None:
-        browser = object()
+    def test_open_profile_context_uses_the_managed_persistent_runtime(self) -> None:
         context = object()
         with patch.object(
             upload,
-            "connect_profile_context",
-            return_value=(browser, context),
-        ), patch.object(
-            upload,
             "_launch_context",
-            side_effect=AssertionError("must reuse open connector"),
+            return_value=context,
         ):
             opened, owns_context, retained_browser = upload._open_profile_context(
                 object(), "C:/safe/naver_1", headless=False
             )
 
         self.assertIs(opened, context)
-        self.assertFalse(owns_context)
-        self.assertIs(retained_browser, browser)
+        self.assertTrue(owns_context)
+        self.assertIsNone(retained_browser)
 
     def test_unfinished_draft_prompt_is_cancelled_before_new_editor_entry(self) -> None:
         page = MagicMock()

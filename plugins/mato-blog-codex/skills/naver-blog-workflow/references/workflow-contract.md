@@ -12,7 +12,6 @@ These are internal contracts for Codex. Do not present them as the normal user i
 python scripts/profiles.py discover
 python scripts/profiles.py list
 python scripts/profiles.py add --slot 1 --alias "업무용" --blog-url "https://blog.naver.com/example"
-python scripts/profiles.py open --slots 1,2
 python scripts/profiles.py check --slot 1 --login
 python scripts/parse_request.py --command-file <local-staging/request.txt>
 python scripts/ingest_browser_sources.py --prepare --keyword "서울 맛집" --surface blog --versions 1 --command-file <local-staging/request.txt>
@@ -35,7 +34,7 @@ When no explicit `--run-dir` is supplied, durable research, history, and generat
 
 `parse_request.py` defaults an omitted surface to `integrated`, an omitted version count to `10`, and an omitted mode to `draft`. A profile number means upload is requested unless the user explicitly says not to upload, save, or publish. `publish` is valid when the original command explicitly says `발행`, `바로발행`, `자동발행`, or another unambiguous public-publish phrase. That phrase authorizes execution in the same task; the saved run ID remains an internal anti-tamper input and is not a second user-confirmation prompt.
 
-`profiles.py open --slots <N,...>` starts each selected persistent Chrome with a loopback-only connector and leaves its visible window running. `profiles.py check --login` and `upload.py --execute` reconnect to that open profile when available instead of launching the locked profile again. The connector never copies or prints cookies, credentials, or browser storage values.
+`profiles.py check --login` and `upload.py --execute` each use the same numbered persistent-profile runtime. Close the visible login window before executing an upload so the profile can be opened by the upload task. The runtime never copies or prints cookies, credentials, or browser storage values.
 
 Each Browser source object should contain `title`, `url`, `text`, `headings`, paraphrased `notes`, and `image_count`. After ingestion, the bridge calls the plugin-bundled `naver_url_download.py` with the retained rank/title folder names; no Mato Helper source checkout is required for this step. Each source folder contains its local original TXT, `<title>_함축.txt`, real `image_N.jpg` files referenced by matching `[image_N.jpg]` tags, and `image-processing.json`. Image cleanup is enabled by default and removes GPS/EXIF/XMP/ICC payloads after applying EXIF orientation. Use `sanitize_images.py` directly for an owned local image or folder that is unrelated to Naver.
 

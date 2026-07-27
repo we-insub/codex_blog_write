@@ -121,7 +121,8 @@ def convert_folder(
     content = ensure_mato_headers(read_text(source), post_title)
     if fix_image_tags:
         content = repair_image_tags(content, folder)
-    output.write_text(content, encoding="utf-8", newline="\n")
+    with output.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(content)
     return {
         "folder": folder.name,
         "title": post_title,

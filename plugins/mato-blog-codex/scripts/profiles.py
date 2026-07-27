@@ -24,7 +24,6 @@ try:
         browser_profiles_dir,
         canonical_naver_blog_url,
         canonical_naver_write_url,
-        googleblog_home,
         parse_positive_slots,
         profile_catalog_path,
         read_json,
@@ -36,7 +35,7 @@ try:
         is_naver_login_required,
         persistent_login_ready,
     )
-    from .profile_connector import connect_profile_context, open_profile_browser
+    from .naver_profile_runtime import launch_mato_profile_context
 except ImportError:  # Direct execution: ``python scripts/profiles.py``.
     from mato_common import (  # type: ignore[no-redef]
         SCHEMA_VERSION,
@@ -44,7 +43,6 @@ except ImportError:  # Direct execution: ``python scripts/profiles.py``.
         browser_profiles_dir,
         canonical_naver_blog_url,
         canonical_naver_write_url,
-        googleblog_home,
         parse_positive_slots,
         profile_catalog_path,
         read_json,
@@ -56,10 +54,7 @@ except ImportError:  # Direct execution: ``python scripts/profiles.py``.
         is_naver_login_required,
         persistent_login_ready,
     )
-    from profile_connector import (  # type: ignore[no-redef]
-        connect_profile_context,
-        open_profile_browser,
-    )
+    from naver_profile_runtime import launch_mato_profile_context  # type: ignore[no-redef]
 
 
 PROFILE_DIR_RE = re.compile(r"^naver_([1-9][0-9]*)$", re.IGNORECASE)
@@ -77,26 +72,12 @@ def profile_path_for_slot(slot: int) -> Path:
     return browser_profiles_dir() / f"naver_{slot}"
 
 
-def legacy_profile_path_for_slot(slot: int) -> Path:
-    """Return the pre-plugin Mato profile location for a numbered slot.
-
-    This is a supported local profile location, not a dependency on the old
-    Mato Helper program.  Keeping it selectable lets an existing user continue
-    using a login they created before installing this plugin.
-    """
-
-    if slot <= 0:
-        raise ValueError("프로필 번호는 1 이상이어야 합니다.")
-    name = "naver_browser" if slot == 1 else f"naver_browser_{slot}"
-    return googleblog_home() / name
-
-
 def _allowed_profile_paths(slot: int) -> tuple[Path, ...]:
-    return (profile_path_for_slot(slot), legacy_profile_path_for_slot(slot))
+    return (profile_path_for_slot(slot),)
 
 
 def _safe_profile_path(slot: int, raw_path: object | None = None) -> Path:
-    """Return one of the two exact, local paths permitted for a profile slot."""
+    """Return the managed local path permitted for a profile slot."""
 
     if raw_path:
         try:
@@ -119,9 +100,7 @@ def _is_safe_profile_directory(path: Path, slot: int | None = None) -> bool:
         if slot is not None:
             return any(resolved == candidate.resolve(strict=False) for candidate in _allowed_profile_paths(slot))
         name = resolved.name
-        if name == "naver_browser":
-            return resolved == legacy_profile_path_for_slot(1).resolve(strict=False)
-        numbered = re.fullmatch(r"naver_(?:browser_)?([1-9][0-9]*)", name, re.IGNORECASE)
+        numbered = re.fullmatch(r"naver_([1-9][0-9]*)", name, re.IGNORECASE)
         if numbered:
             inferred_slot = int(numbered.group(1))
             return any(
@@ -258,30 +237,13 @@ def save_catalog(profiles: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
 def discover_existing_profiles(
     profiles: Iterable[Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[int]]:
-    """Merge bundled and pre-plugin local profile folders by numbered slot."""
+    """Discover only profile folders created by this plugin."""
 
     current = {
         int(profile["slot"]): _normalize_profile(profile)
         for profile in (profiles or [])
     }
     discovered: list[int] = []
-    # Prefer the exact legacy path when no record exists: it may hold the
-    # user's existing normal Chrome login and does not need to be copied.
-    legacy_root = googleblog_home()
-    if legacy_root.exists():
-        for path in legacy_root.iterdir():
-            if path.name == "naver_browser":
-                slot = 1
-            else:
-                match = re.fullmatch(r"naver_browser_([1-9][0-9]*)", path.name, re.IGNORECASE)
-                slot = int(match.group(1)) if match else 0
-            if not slot or slot in current or not _is_safe_profile_directory(path, slot):
-                continue
-            profile = _new_profile(slot, source="legacy_discovered")
-            profile["profile_path"] = str(path)
-            profile["profile_exists"] = True
-            current[slot] = profile
-            discovered.append(slot)
     root = browser_profiles_dir()
     if root.exists():
         for path in root.iterdir():
@@ -357,7 +319,7 @@ def add_profile(
         )
         if not replace and not can_enrich_discovered:
             raise ValueError(f"프로필 {slot}번이 이미 등록되어 있습니다. 수정은 edit을 사용하세요.")
-        profile = existing
+        profile = _new_profile(slot) if replace else existing
     else:
         profile = _new_profile(slot)
 
@@ -461,11 +423,9 @@ def _is_access_restricted(page: Any) -> bool:
     return any(
         marker in body_text
         for marker in (
-            "captcha",
-            "자동입력 방지",
-            "비정상적인 접근",
-            "접근이 제한",
-            "보안 확인",
+            "비정상적인 접근이 감지",
+            "접근이 제한되었습니다",
+            "자동입력 방지문자를 입력",
         )
     )
 
@@ -507,7 +467,10 @@ def _profile_check_urls(profile: Mapping[str, Any]) -> tuple[str, str | None]:
 
     blog_url = str(profile.get("blog_url") or "")
     if not blog_url:
-        return NAVER_LOGIN_URL, None
+        # A discovered Mato Helper profile can have a valid Chrome session even
+        # before its blog URL is migrated. Opening the login endpoint first
+        # makes that reusable session look expired to the user.
+        return NAVER_HOME_URL, None
     write_url = str(profile.get("write_url") or canonical_naver_write_url(blog_url))
     return NAVER_HOME_URL, write_url
 
@@ -555,22 +518,10 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
         file=sys.stderr,
     )
     with sync_playwright() as playwright:
-        attached = connect_profile_context(playwright, user_data_dir)
-        owns_context = attached is None
-        if attached is not None:
-            _browser, context = attached
-        else:
-            try:
-                context = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(user_data_dir),
-                    channel="chrome",
-                    headless=False,
-                    locale="ko-KR",
-                    timezone_id="Asia/Seoul",
-                    viewport={"width": 1280, "height": 1024},
-                )
-            except Exception as exc:
-                raise RuntimeError(f"설치된 Chrome을 열지 못했습니다: {exc}") from exc
+        try:
+            context = launch_mato_profile_context(playwright, user_data_dir, headless=False)
+        except Exception as exc:
+            raise RuntimeError(f"설치된 Chrome을 열지 못했습니다: {exc}") from exc
         try:
             page = context.pages[0] if context.pages else context.new_page()
             _go_within_deadline(page, start_url)
@@ -623,22 +574,7 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
                 return "logged_in"
             return "error"
         finally:
-            if owns_context:
-                context.close()
-
-
-def open_profiles(profile_slots: str | Iterable[int | str]) -> list[dict[str, Any]]:
-    """Open numbered profile Chrome windows and leave them available for reuse."""
-
-    catalog = load_catalog()
-    results: list[dict[str, Any]] = []
-    for slot in parse_positive_slots(profile_slots):
-        profile = get_profile(slot, catalog=catalog)
-        profile_path = Path(str(profile["profile_path"]))
-        if not _is_safe_profile_directory(profile_path):
-            raise ValueError(f"프로필 폴더가 없습니다: {profile_path}")
-        results.append(open_profile_browser(profile))
-    return results
+            context.close()
 
 
 def check_profile(
@@ -889,10 +825,6 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--timeout", type=int, default=300, help="수동 로그인 대기 초")
     check_parser.add_argument("--json", action="store_true")
 
-    open_parser = subparsers.add_parser("open", help="전용 Chrome 프로필 창을 계속 열어두기")
-    open_parser.add_argument("--slots", required=True, help="예: 1,2")
-    open_parser.add_argument("--json", action="store_true")
-
     assign_parser = subparsers.add_parser("assign", help="원고를 프로필에 라운드로빈 배정")
     assign_parser.add_argument("--profiles", required=True, help="예: 1,2,3")
     assign_parser.add_argument("--count", required=True, type=int, help="배정할 원고 수")
@@ -961,9 +893,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 login=args.login,
                 timeout_seconds=args.timeout,
             )
-            _print_value(result, as_json=args.json)
-        elif args.subcommand == "open":
-            result = open_profiles(args.slots)
             _print_value(result, as_json=args.json)
         elif args.subcommand == "assign":
             assignments = assign_count(args.count, args.profiles)

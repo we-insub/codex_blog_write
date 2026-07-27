@@ -14,6 +14,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import mato_common
 import profiles
+import profile_connector
 
 
 class ProfileCatalogTests(unittest.TestCase):
@@ -34,14 +35,13 @@ class ProfileCatalogTests(unittest.TestCase):
         persisted = json.loads(mato_common.profile_catalog_path().read_text(encoding="utf-8"))
         self.assertEqual([item["slot"] for item in persisted["profiles"]], [1, 2, 10])
 
-    def test_discovers_existing_legacy_slot_without_copying_its_browser_data(self) -> None:
-        legacy = profiles.legacy_profile_path_for_slot(1)
+    def test_ignores_browser_folders_not_created_by_the_plugin(self) -> None:
+        legacy = mato_common.googleblog_home() / "naver_browser"
         legacy.mkdir(parents=True, exist_ok=True)
+
         catalog = profiles.load_catalog()
-        profile = profiles.get_profile(1, catalog=catalog)
-        self.assertEqual(Path(profile["profile_path"]), legacy)
-        self.assertEqual(profile["source"], "legacy_discovered")
-        self.assertTrue(profile["profile_exists"])
+
+        self.assertEqual(catalog["profiles"], [])
 
     def test_add_and_edit_profile_store_only_derived_local_metadata(self) -> None:
         added = profiles.add_profile(3, alias="업무용", blog_url="https://m.blog.naver.com/my.blog")
@@ -64,6 +64,50 @@ class ProfileCatalogTests(unittest.TestCase):
         enriched = profiles.add_profile(4, alias="기존 계정", blog_url="owner4")
         self.assertEqual(enriched["account_alias"], "기존 계정")
         self.assertEqual(enriched["source"], "created")
+
+    def test_replace_keeps_the_plugin_managed_profile_path(self) -> None:
+        profiles.add_profile(1, alias="기존", blog_url="owner1")
+
+        replaced = profiles.add_profile(1, alias="새 프로필", blog_url="owner2", replace=True)
+
+        self.assertEqual(Path(replaced["profile_path"]), profiles.profile_path_for_slot(1))
+        self.assertEqual(replaced["source"], "created")
+
+    def test_macos_chrome_candidate_is_supported(self) -> None:
+        candidates = profile_connector.chrome_executable_candidates("Darwin")
+        self.assertIn(Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"), candidates)
+
+    def test_macos_profile_launch_uses_the_app_launcher(self) -> None:
+        profile = {"slot": 1, "profile_path": str(self.env.root / "naver_1"), "blog_url": "https://blog.naver.com/owner1"}
+        Path(profile["profile_path"]).mkdir()
+        with patch.object(profile_connector, "find_chrome_executable"), patch.object(
+            profile_connector, "connector_endpoint", side_effect=(None, "http://127.0.0.1:9222")
+        ), patch.object(profile_connector.platform, "system", return_value="Darwin"), patch.object(
+            profile_connector.subprocess, "Popen"
+        ) as popen:
+            popen.return_value.pid = 1234
+            result = profile_connector.open_profile_browser(profile)
+
+        command = popen.call_args.args[0]
+        self.assertEqual(command[:4], ["/usr/bin/open", "-na", "Google Chrome", "--args"])
+        self.assertIn("--remote-debugging-port=0", command)
+        self.assertEqual(result["status"], "opened")
+
+    def test_macos_profile_launch_recovers_a_dead_instance_lock(self) -> None:
+        profile = {"slot": 1, "profile_path": str(self.env.root / "naver_1")}
+        profile_path = Path(profile["profile_path"])
+        profile_path.mkdir()
+        os.symlink("local-machine-999999", profile_path / "SingletonLock")
+        with patch.object(profile_connector, "find_chrome_executable"), patch.object(
+            profile_connector, "connector_endpoint", side_effect=(None, "http://127.0.0.1:9222")
+        ), patch.object(profile_connector.platform, "system", return_value="Darwin"), patch.object(
+            profile_connector.os, "kill", side_effect=ProcessLookupError
+        ), patch.object(profile_connector.subprocess, "Popen") as popen:
+            popen.return_value.pid = 1234
+            result = profile_connector.open_profile_browser(profile)
+
+        self.assertEqual(result["status"], "opened")
+        self.assertFalse(os.path.lexists(profile_path / "SingletonLock"))
 
     def test_round_robin_preserves_requested_profile_order_and_deduplicates_slots(self) -> None:
         for slot in (1, 2, 3):
@@ -95,11 +139,11 @@ class ProfileCatalogTests(unittest.TestCase):
             ("https://www.naver.com", "https://blog.naver.com/owner1?Redirect=Write&"),
         )
 
-    def test_profile_without_blog_url_opens_login_only(self) -> None:
+    def test_profile_without_blog_url_restores_the_naver_home_session(self) -> None:
         profile = profiles.add_profile(1, alias="계정")
         self.assertEqual(
             profiles._profile_check_urls(profile),
-            ("https://nid.naver.com/nidlogin.login", None),
+            ("https://www.naver.com", None),
         )
 
     def test_profile_check_navigation_timeout_never_exceeds_remaining_time(self) -> None:
@@ -120,25 +164,6 @@ class ProfileCatalogTests(unittest.TestCase):
         bundled.assert_called_once()
         self.assertEqual(result["login_status"], "ready")
         self.assertEqual(result["session_source"], "plugin")
-
-    def test_open_profiles_starts_each_requested_connector_without_copying_data(self) -> None:
-        profiles.add_profile(1, alias="계정1", blog_url="owner1")
-        profiles.add_profile(2, alias="계정2", blog_url="owner2")
-        with patch.object(
-            profiles,
-            "open_profile_browser",
-            side_effect=lambda profile: {
-                "slot": profile["slot"],
-                "profile_path": profile["profile_path"],
-                "status": "opened",
-                "connector_ready": True,
-            },
-        ) as connector:
-            result = profiles.open_profiles("1,2")
-
-        self.assertEqual([row["slot"] for row in result], [1, 2])
-        self.assertTrue(all(row["connector_ready"] for row in result))
-        self.assertEqual(connector.call_count, 2)
 
     def test_voice_metadata_is_saved_without_browser_and_redacts_secrets(self) -> None:
         profiles.add_profile(1, alias="계정", blog_url="owner1")
