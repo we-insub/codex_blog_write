@@ -1048,6 +1048,16 @@ class NaverTextUploader:
         if not lines:
             return ""
         start = self._exact_text(frame, start_placeholder, timeout=3_000)
+        if start is None and start_placeholder == NAVER_FALLBACK_PLACEHOLDER:
+            start = _find_visible(
+                (frame,),
+                (
+                    ".se-component:not(.se-documentTitle) "
+                    ".se-module-text.se-is-empty .se-placeholder.__se_placeholder",
+                    ".se-component:not(.se-documentTitle) .se-placeholder.__se_placeholder",
+                ),
+                timeout=3_000,
+            )
         if start is None:
             raise UploadError(
                 f"Naver editor placeholder was not found: {start_placeholder}",

@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,9 +21,16 @@ DEVTOOLS_ACTIVE_PORT = "DevToolsActivePort"
 
 
 def find_chrome_executable() -> Path:
-    """Return the installed Google Chrome executable on Windows."""
+    """Return the installed Google Chrome executable on this host."""
 
     candidates = []
+    if sys.platform == "darwin":
+        candidates.extend(
+            [
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ]
+        )
     for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
         root = os.environ.get(env_name)
         if root:
@@ -101,6 +109,7 @@ def open_profile_browser(
         stderr=subprocess.DEVNULL,
         close_fds=True,
         creationflags=creationflags,
+        start_new_session=os.name != "nt",
     )
     deadline = time.monotonic() + max(3.0, float(timeout_seconds))
     while time.monotonic() < deadline:

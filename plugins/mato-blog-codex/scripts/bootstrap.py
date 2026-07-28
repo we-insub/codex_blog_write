@@ -31,8 +31,18 @@ def runtime_python() -> Path:
 
 
 def chrome_candidates() -> list[Path]:
+    if sys.platform == "darwin":
+        return [
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ]
     if os.name != "nt":
-        return []
+        return [
+            Path("/usr/bin/google-chrome"),
+            Path("/usr/bin/google-chrome-stable"),
+            Path("/usr/bin/chromium"),
+            Path("/usr/bin/chromium-browser"),
+        ]
     candidates: list[Path] = []
     for variable, suffix in (
         ("PROGRAMFILES", "Google/Chrome/Application/chrome.exe"),
@@ -84,8 +94,6 @@ def status_payload() -> dict[str, object]:
 def install(*, reinstall: bool = False) -> dict[str, object]:
     if sys.version_info < (3, 10):
         raise RuntimeError("Python 3.10 or newer is required.")
-    if os.name != "nt":
-        raise RuntimeError("Version 0.1 supports Windows 10/11 only.")
     if not REQUIREMENTS.is_file():
         raise FileNotFoundError(f"requirements file not found: {REQUIREMENTS}")
 
