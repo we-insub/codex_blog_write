@@ -72,6 +72,8 @@ PLACEHOLDER_TYPING_DELAY_MS = 30
 TABLE_DELAY_MS = 1_500
 TABLE_SELECT_DELAY_MS = 2_500
 TABLE_DELETE_DELAY_MS = 2_500
+NAVER_EDITOR_LOAD_WAIT_MS = 20_000
+NAVER_TITLE_LOOKUP_TIMEOUT_MS = 12_000
 RESTRICTION_TEXT = ("비정상적인 접근이 감지", "접근이 제한되었습니다", "자동입력 방지문자를 입력")
 DRAFT_SUCCESS_SELECTORS = (
     "[role='alert']:has-text('임시저장이 완료되었습니다')",
@@ -677,7 +679,7 @@ class NaverTextUploader:
     def open_editor(self, write_url: str) -> list[Any]:
         target_url = _normalize_naver_write_url(write_url)
         self.page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
-        self.page.wait_for_timeout(4_000)
+        self.page.wait_for_timeout(NAVER_EDITOR_LOAD_WAIT_MS)
         self._wait_for_manual_login()
         _check_restriction(self.page)
         current = str(self.page.url)
@@ -702,7 +704,7 @@ class NaverTextUploader:
                 "[contenteditable='true'][data-placeholder*='제목']",
                 "[contenteditable='true'][aria-label*='제목']",
             ),
-            timeout=3_000,
+            timeout=NAVER_TITLE_LOOKUP_TIMEOUT_MS,
         )
         if title is None:
             raise UploadError(

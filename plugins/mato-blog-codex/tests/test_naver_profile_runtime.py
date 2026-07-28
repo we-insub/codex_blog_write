@@ -47,6 +47,7 @@ class MatoProfileRuntimeTests(unittest.TestCase):
         options = playwright.chromium.calls[0][1]
         self.assertIn("--disable-blink-features=AutomationControlled", options["args"])
         self.assertEqual(options["locale"], "ko-KR")
+        self.assertEqual(options["timeout"], 45_000)
 
 
 if __name__ == "__main__":

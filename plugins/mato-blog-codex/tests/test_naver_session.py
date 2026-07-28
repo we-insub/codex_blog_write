@@ -98,6 +98,7 @@ class NaverSessionTests(unittest.TestCase):
         self.assertFalse(naver_session.has_naver_login(context))
         self.assertFalse(naver_session.persistent_login_ready(context, FakePage()))
         self.assertEqual(context.added, [])
+        self.assertTrue(naver_session.is_naver_login_required(FakePage(), context))
 
     def test_visible_login_ui_wins_even_when_old_cookies_exist(self) -> None:
         context = FakeContext(auth_cookies(time.time() + 86_400))

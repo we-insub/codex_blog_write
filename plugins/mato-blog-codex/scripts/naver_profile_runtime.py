@@ -44,6 +44,7 @@ def launch_mato_profile_context(
         "viewport": {"width": 1280, "height": 1024},
         "locale": "ko-KR",
         "timezone_id": "Asia/Seoul",
+        "timeout": 45_000,
     }
     errors: list[str] = []
     for channel in ("chrome", "msedge", None):

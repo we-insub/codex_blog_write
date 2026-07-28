@@ -62,6 +62,10 @@ VOICE_STATUSES = {"unset", "pending", "ready", "error"}
 LOGIN_STATUSES = {"unknown", "logged_in", "ready", "needs_login", "profile_missing", "error"}
 NAVER_HOME_URL = "https://www.naver.com"
 NAVER_LOGIN_URL = "https://nid.naver.com/nidlogin.login"
+NAVER_HOME_LOAD_WAIT_MS = 12_000
+NAVER_LOGIN_LOAD_WAIT_MS = 3_000
+NAVER_WRITE_LOAD_WAIT_MS = 25_000
+NAVER_POST_CHECK_HOLD_MS = 15_000
 
 
 def profile_path_for_slot(slot: int) -> Path:
@@ -431,7 +435,13 @@ def _is_access_restricted(page: Any) -> bool:
 
 
 def _is_editor_ready(page: Any) -> bool:
-    """Return whether actual editable controls, not just a URL, are present."""
+    """Return whether Naver accepted the writing-profile transition.
+
+    Smart Editor can keep its editable controls behind a loading layer after
+    ``PostWriteForm`` has loaded.  For a profile login check, that authenticated
+    writer frame is sufficient evidence; upload performs its own stricter
+    editor-control checks before typing.
+    """
 
     current_url = str(getattr(page, "url", "")).lower()
     if _is_login_page(page) or _is_access_restricted(page):
@@ -441,8 +451,10 @@ def _is_editor_ready(page: Any) -> bool:
         "[contenteditable='true']"
     )
     scopes = [page]
+    writer_frame = None
     try:
         if page.locator("iframe#mainFrame").count() > 0:
+            writer_frame = page.frame(name="mainFrame")
             scopes.insert(0, page.frame_locator("iframe#mainFrame"))
     except Exception:
         pass
@@ -452,6 +464,14 @@ def _is_editor_ready(page: Any) -> bool:
                 return True
         except Exception:
             continue
+    if writer_frame is not None:
+        try:
+            writer_url = str(getattr(writer_frame, "url", "") or "").lower()
+            ready_state = str(writer_frame.evaluate("document.readyState") or "").lower()
+            if "postwriteform.naver" in writer_url and ready_state in {"interactive", "complete"}:
+                return True
+        except Exception:
+            pass
     # A redirect-style write URL can remain in the address bar while Naver is
     # still showing a login form.  Never treat its URL alone as authentication.
     return False
@@ -523,9 +543,24 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
         except Exception as exc:
             raise RuntimeError(f"설치된 Chrome을 열지 못했습니다: {exc}") from exc
         try:
-            page = context.pages[0] if context.pages else context.new_page()
+            # Match Mato Helper: each profile check starts a fresh tab inside
+            # the same persistent browser context instead of reusing a tab
+            # restored from the previous Chrome shutdown.
+            page = context.new_page()
+
+            def _finish(status: str) -> str:
+                """Give Chrome the same visible post-check hold as Mato Helper."""
+
+                try:
+                    page.wait_for_timeout(NAVER_POST_CHECK_HOLD_MS)
+                except Exception:
+                    pass
+                return status
+
             _go_within_deadline(page, start_url)
-            page.wait_for_timeout(6_500 if start_url == NAVER_HOME_URL else 1_500)
+            page.wait_for_timeout(
+                NAVER_HOME_LOAD_WAIT_MS if start_url == NAVER_HOME_URL else NAVER_LOGIN_LOAD_WAIT_MS
+            )
             if _is_access_restricted(page):
                 return "error"
 
@@ -533,7 +568,7 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
             if is_naver_login_required(page, context):
                 if not _is_login_page(page):
                     _go_within_deadline(page, NAVER_LOGIN_URL)
-                    page.wait_for_timeout(1_500)
+                    page.wait_for_timeout(NAVER_LOGIN_LOAD_WAIT_MS)
                 ensure_keep_login_checked(page)
                 print(
                     "Chrome에서 직접 로그인해 주세요. 로그인 상태 유지 옵션은 자동으로 확인합니다.",
@@ -541,7 +576,7 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
                 )
             elif not login_only and write_url:
                 _go_within_deadline(page, write_url)
-                page.wait_for_timeout(6_500)
+                page.wait_for_timeout(NAVER_WRITE_LOAD_WAIT_MS)
                 target_checked = True
 
             while time.monotonic() < deadline:
@@ -553,7 +588,7 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
                 else:
                     if not login_only and write_url and not target_checked:
                         _go_within_deadline(page, write_url)
-                        page.wait_for_timeout(6_500)
+                        page.wait_for_timeout(NAVER_WRITE_LOAD_WAIT_MS)
                         target_checked = True
                         if _is_access_restricted(page):
                             return "error"
@@ -561,9 +596,9 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
                             continue
                     if persistent_login_ready(context, page):
                         if login_only:
-                            return "logged_in"
+                            return _finish("logged_in")
                         if _is_editor_ready(page):
-                            return "ready"
+                            return _finish("ready")
                 try:
                     page.wait_for_timeout(1_000)
                 except Exception:
@@ -571,7 +606,7 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
             if is_naver_login_required(page, context):
                 return "needs_login"
             if login_only and persistent_login_ready(context, page):
-                return "logged_in"
+                return _finish("logged_in")
             return "error"
         finally:
             context.close()

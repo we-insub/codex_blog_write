@@ -1,9 +1,7 @@
 """Keep a Naver login reusable inside one local persistent Chrome profile.
 
-This is a self-contained port of the profile-session behavior used by the
-original Google Blog Auto project. Authentication values never leave the
-Playwright context, are never printed, and are not written to the profile
-catalog or run history.
+Authentication values never leave the Playwright context and are never printed
+or written to the profile catalog or run history.
 """
 
 from __future__ import annotations
@@ -22,7 +20,7 @@ PERSIST_SECONDS = 30 * 24 * 60 * 60
 
 
 def _auth_cookie_state(context: Any) -> tuple[bool, bool, dict[str, Mapping[str, Any]]]:
-    """Return only the in-memory state needed to preserve the same profile."""
+    """Return the in-memory state needed to preserve the same profile."""
 
     if context is None:
         return False, False, {}
@@ -72,9 +70,6 @@ def is_naver_login_required(page: Any, context: Any) -> bool:
     if "nid.naver.com" in current_url or "nidlogin" in current_url:
         return True
     selectors = (
-        'a[href*="nid.naver.com/nidlogin.login"]',
-        'a[href*="/nidlogin.login"]',
-        '#log\\.login',
         'input[name="id"]',
         'input[name="pw"]',
     )
@@ -91,6 +86,9 @@ def is_naver_login_required(page: Any, context: Any) -> bool:
                 return True
         except Exception:
             continue
+    # Naver's signed-in home page can still expose login-shaped header links
+    # (including ``#log.login``).  Only actual login fields count as visible
+    # login UI; otherwise the profile's auth state decides the result.
     return not has_naver_login(context)
 
 
@@ -158,7 +156,7 @@ def ensure_keep_login_checked(page: Any) -> bool:
 
 
 def _promote_auth_cookies(context: Any, page: Any, auth: Mapping[str, Mapping[str, Any]]) -> bool:
-    """Make session cookies reusable in the same persistent profile only."""
+    """Make authentication reusable in the same persistent profile only."""
 
     if context is None or not auth:
         return False
