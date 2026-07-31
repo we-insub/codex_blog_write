@@ -38,7 +38,10 @@ class BootstrapPlatformTests(unittest.TestCase):
             candidates[0],
             Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
         )
-        self.assertIn("Applications/Google Chrome.app/Contents/MacOS/Google Chrome", str(candidates[1]))
+        self.assertIn(
+            "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            candidates[1].as_posix(),
+        )
 
     def test_windows_chrome_candidates_cover_standard_install_roots(self) -> None:
         environment = {
