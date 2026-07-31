@@ -2,7 +2,7 @@
 
 ## Script location
 
-Resolve the plugin root two levels above this skill directory. Use the local venv Python printed by `scripts/bootstrap.py` after setup.
+Resolve the plugin root two levels above this skill directory. Bootstrap with `scripts/bootstrap-windows.cmd` on Windows or `sh scripts/bootstrap-macos.sh` on macOS, then use the local venv Python printed by the launcher.
 
 ## Commands
 
@@ -14,6 +14,7 @@ python scripts/profiles.py list
 python scripts/profiles.py add --slot 1 --alias "업무용" --blog-url "https://blog.naver.com/example"
 python scripts/profiles.py open --slots 1,2
 python scripts/profiles.py check --slot 1 --login
+python scripts/profiles.py reset --slot 1 --confirm RESET-1
 python scripts/parse_request.py --command-file <local-staging/request.txt>
 python scripts/ingest_browser_sources.py --prepare --keyword "서울 맛집" --surface blog --versions 1 --command-file <local-staging/request.txt>
 python scripts/ingest_browser_sources.py --input <local-staging/browser-sources.json> --keyword "서울 맛집" --surface blog --versions 1 --run-dir <prepared-run-dir>

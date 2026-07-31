@@ -1,6 +1,6 @@
 {
   "name": "mato-blog-codex",
-  "version": "0.1.0+codex.20260723002006",
+  "version": "0.2.0+codex.20260731221014",
   "description": "Naver blog research, original Mato-format drafting, local profile management, and confirmed upload workflows for Codex.",
   "author": {
     "name": "Mato Helper"

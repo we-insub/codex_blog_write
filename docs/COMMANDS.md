@@ -14,24 +14,30 @@
 
 아래 명령은 Codex 스킬이 내부에서 실행하거나 개발자가 상태를 진단할 때 사용합니다. 터미널 옵션의 검색 영역과 발행 방식은 영문 값을 사용합니다.
 
-아래 명령은 모두 저장소 루트에서 실행합니다.
+아래 명령은 모두 저장소 루트에서 실행합니다. 본문 예시는 Windows PowerShell 형식이며, macOS에서는 아래처럼 전용 Python 경로를 준비한 뒤 `& $MatoPython` 대신 `"$MatoPython"`을 사용합니다.
 
 ```powershell
 cd C:\path\to\mato-blog-codex
 ```
 
+```bash
+cd /path/to/codex_blog_write
+sh plugins/mato-blog-codex/scripts/bootstrap-macos.sh
+MatoPython="$HOME/.googleblog/mato-blog-codex/.venv/bin/python"
+```
+
 ## 실행 환경 준비
 
 ```powershell
-py plugins/mato-blog-codex/scripts/bootstrap.py
+plugins\mato-blog-codex\scripts\bootstrap-windows.cmd
 $MatoPython = "$env:USERPROFILE\.googleblog\mato-blog-codex\.venv\Scripts\python.exe"
 ```
 
-PC별 전용 가상환경과 필요한 패키지를 준비합니다. 저장소를 처음 설치했거나 의존성이 변경된 뒤 한 번 실행합니다. 이후 명령은 의존성이 설치된 `$MatoPython`으로 실행합니다.
+PC별 전용 가상환경과 필요한 패키지를 준비합니다. 두 실행기는 기존 전용 가상환경을 먼저 확인하고, 없으면 설치된 Python 3.14부터 3.10까지 순서대로 찾아 사용하므로 macOS의 오래된 기본 `python3`를 실수로 선택하지 않습니다. 저장소를 처음 설치했거나 의존성이 변경된 뒤 한 번 실행합니다. 이후 명령은 의존성이 설치된 `$MatoPython`으로 실행합니다.
 
 ## 프로필
 
-기존 `naver_N` 폴더를 찾아 프로필 목록에 추가합니다.
+이 프로그램이 이전 실행에서 만든 Codex 전용 `naver_N` 폴더를 찾아 프로필 목록에 추가합니다. 마토헬퍼 폴더는 검색하지 않습니다.
 
 ```powershell
 & $MatoPython plugins/mato-blog-codex/scripts/profiles.py discover
@@ -62,6 +68,12 @@ PC별 전용 가상환경과 필요한 패키지를 준비합니다. 저장소�
 
 ```powershell
 & $MatoPython plugins/mato-blog-codex/scripts/profiles.py edit --slot 1 --alias "업무용 메인" --blog-url "https://blog.naver.com/example"
+```
+
+해당 번호의 Codex 전용 로그인 데이터만 초기화합니다. 사용자가 그 프로필의 초기화를 명시적으로 요청했을 때만 실행하며, 열린 Chrome 창은 먼저 정상 종료해야 합니다.
+
+```powershell
+& $MatoPython plugins/mato-blog-codex/scripts/profiles.py reset --slot 1 --confirm "RESET-1"
 ```
 
 프로필 폴더가 존재하는지만 안전하게 검사하려면 다음 명령을 사용합니다. 이 명령은 Chrome을 열지 않습니다.

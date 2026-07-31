@@ -29,13 +29,13 @@ Codex가 필요한 내부 부트스트랩을 수행합니다. 모바일에서 �
 
 ## 2. 프로필 준비
 
-기존 Mato Helper 프로필이 있다면 Codex에 발견과 목록 표시를 요청합니다.
+이 프로그램에서 사용할 Codex 전용 프로필을 번호별로 등록합니다. 마토헬퍼 프로필은 발견·복사·공유하지 않으며, 각 사용자의 이 프로그램 전용 저장소에 새로 만듭니다.
 
 ```text
-기존 네이버 프로필을 찾아서 번호, 별칭, 블로그 URL과 함께 보여줘.
+프로필 1,2를 만들고 번호, 별칭, 블로그 URL과 함께 보여줘.
 ```
 
-각 프로필은 번호, 계정 별칭과 블로그 URL로 구분합니다. 블로그 ID 또는 URL을 등록하면 `https://blog.naver.com/<ID>`와 `https://blog.naver.com/<ID>?Redirect=Write&`를 자동 생성합니다. 프로필 생성은 폴더와 메타데이터만 준비하며 Chrome은 별도 요청으로 엽니다.
+각 프로필은 번호, 계정 별칭과 블로그 URL로 구분합니다. 블로그 ID 또는 URL을 등록하면 `https://blog.naver.com/<ID>`와 `https://blog.naver.com/<ID>?Redirect=Write&`를 자동 생성합니다. 프로필 생성은 `~/.googleblog/mato-blog-codex/browser_profiles/naver_N` 폴더와 메타데이터만 준비하며 Chrome은 별도 요청으로 엽니다. 플러그인 업데이트나 프로필 정보 수정은 이 폴더를 지우지 않고, 사용자가 `RESET-N`으로 해당 번호를 명시적으로 초기화할 때만 그 번호의 브라우저 데이터를 교체합니다.
 
 ```text
 프로필 1,2 Chrome 창을 각각 열어두고 닫지 마.

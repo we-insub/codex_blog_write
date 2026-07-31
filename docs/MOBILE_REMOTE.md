@@ -2,7 +2,7 @@
 
 [README로 돌아가기](../README.md)
 
-ChatGPT 모바일의 Remote를 사용하면 밖에서도 집이나 사무실의 Windows 호스트에 설치된 Mato Blog Codex를 자연어로 실행하고 진행 상황을 확인할 수 있습니다. 휴대폰이 네이버 작업을 직접 수행하는 것이 아니라, 연결된 호스트 PC가 저장소·플러그인·로컬 파일·Browser·번호별 전용 Chrome 프로필을 제공합니다.
+ChatGPT 모바일의 Remote를 사용하면 밖에서도 집이나 사무실의 Windows 또는 macOS 호스트에 설치된 Mato Blog Codex를 자연어로 실행하고 진행 상황을 확인할 수 있습니다. 휴대폰이 네이버 작업을 직접 수행하는 것이 아니라, 연결된 호스트가 저장소·플러그인·로컬 파일·Browser·번호별 전용 Chrome 프로필을 제공합니다.
 
 OpenAI의 현재 Remote 동작과 설정은 [Remote connections 공식 문서](https://learn.chatgpt.com/docs/remote-connections)를 기준으로 합니다.
 
@@ -11,7 +11,7 @@ OpenAI의 현재 Remote 동작과 설정은 [Remote connections 공식 문서](h
 | 구성 요소 | 역할 | 로그인 상태 |
 | --- | --- | --- |
 | ChatGPT 모바일 Remote | 명령 전송, 질문 응답, 승인, 결과 확인 | 같은 ChatGPT 계정·workspace |
-| Windows 호스트 | 저장소, Mato 플러그인, 파일, 스크립트와 로컬 도구 제공 | 호스트에만 존재 |
+| Windows/macOS 호스트 | 저장소, Mato 플러그인, 파일, 스크립트와 로컬 도구 제공 | 호스트에만 존재 |
 | `@Browser` | 네이버 공개 검색 결과와 최대 5개 공개 글 조사 | 내장 Browser의 별도 프로필 |
 | 전용 Chrome `naver_N` | 네이버 글쓰기, 임시저장과 발행 | 로컬 프로필별 네이버 세션과 loopback 연결기 |
 
@@ -23,7 +23,7 @@ Codex의 내장 Browser는 일반 Chrome과 분리된 프로필을 사용하며 
 
 호스트 PC에 다음을 먼저 준비합니다.
 
-- Windows 10/11과 최신 ChatGPT/Codex 데스크톱 앱
+- Windows 10/11 또는 macOS와 최신 ChatGPT/Codex 데스크톱 앱
 - 이 GitHub 저장소와 설치된 Mato Blog Codex 플러그인
 - Plugins Directory에서 설치·활성화한 **Browser** 플러그인
 - 활성화된 Computer Use
@@ -51,7 +51,7 @@ Browser는 처음 방문하는 사이트에 대한 허용을 요청할 수 있�
 
 ## 2. Remote 연결
 
-1. 연결할 Windows 호스트에서 ChatGPT 데스크톱 앱을 실행합니다.
+1. 연결할 Windows 또는 macOS 호스트에서 ChatGPT 데스크톱 앱을 실행합니다.
 2. 사이드바에서 **Set up Remote**를 선택합니다.
 3. 화면에 나타난 QR 코드를 휴대폰으로 스캔합니다.
 4. 휴대폰의 ChatGPT 앱에서 같은 ChatGPT 계정과 workspace인지 확인합니다.
@@ -101,10 +101,10 @@ Remote 작업 동안 호스트는 다음 상태여야 합니다.
 - ChatGPT 데스크톱 앱이 실행 중임
 - Remote Control이 켜져 있음
 - Browser와 Mato Blog Codex 플러그인이 활성화됨
-- Windows Computer Use 작업 중에는 세션이 잠금 해제됨
+- Computer Use 작업 중에는 호스트 화면이 잠금 해제됨
 - 업로드에 사용할 `naver_N` 전용 Chrome 창과 loopback 연결기가 열려 있음
 
-호스트가 잠들거나 네트워크가 끊기거나 앱이 종료되면 Remote도 중단됩니다. Windows의 Computer Use는 활성 데스크톱 전면에서 동작하므로, 작업 중에는 호스트 화면을 다른 용도로 조작하지 않는 것이 안전합니다.
+호스트가 잠들거나 네트워크가 끊기거나 앱이 종료되면 Remote도 중단됩니다. Computer Use는 활성 데스크톱 전면에서 동작하므로, 작업 중에는 호스트 화면을 다른 용도로 조작하지 않는 것이 안전합니다.
 
 집을 떠나기 전에 필요한 `naver_N` 전용 창을 열고 각 프로필에 직접 로그인한 뒤 글쓰기 접근과 `제목을입력해주세요1:` 내 템플릿을 확인하십시오. 원고 입력·이미지 업로드·발행 확인 중에는 호스트에서 해당 창을 닫거나 다른 페이지로 이동하지 마십시오. 원격 작업 중 로그인 만료, MFA, CAPTCHA 또는 접근 제한이 발생하면 자동으로 풀거나 우회하지 않으며 사용자가 호스트에서 정상 절차로 해결할 때까지 중단합니다.
 

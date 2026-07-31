@@ -1457,6 +1457,11 @@ def resolve_uncertain_upload(
 
 
 def _launch_context(playwright: Any, profile_path: str, *, headless: bool) -> Any:
+    if not Path(profile_path).is_dir():
+        raise UploadError(
+            f"Chrome profile directory is missing: {profile_path}",
+            code="profile_missing",
+        )
     try:
         return playwright.chromium.launch_persistent_context(
             user_data_dir=profile_path,

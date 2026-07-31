@@ -1,7 +1,7 @@
 """Manage local Naver Chrome profiles without storing credentials.
 
-Metadata is kept in ``~/.googleblog/local_agent/naver_profiles.json`` while
-Chrome user data lives in ``~/.googleblog/browser_profiles/naver_N``. Browser
+Metadata is kept in ``~/.googleblog/mato-blog-codex/naver_profiles.json`` while
+Chrome user data lives in ``~/.googleblog/mato-blog-codex/browser_profiles/naver_N``. Browser
 automation is imported lazily and is used only for an explicit
 ``check --login`` command, which always opens a visible Chrome window for the
 user to complete login manually.
@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -24,7 +26,6 @@ try:
         browser_profiles_dir,
         canonical_naver_blog_url,
         canonical_naver_write_url,
-        googleblog_home,
         parse_positive_slots,
         profile_catalog_path,
         read_json,
@@ -36,7 +37,12 @@ try:
         is_naver_login_required,
         persistent_login_ready,
     )
-    from .profile_connector import connect_profile_context, open_profile_browser
+    from .profile_connector import (
+        connect_profile_context,
+        connector_endpoint,
+        open_profile_browser,
+        profile_lock_exists,
+    )
 except ImportError:  # Direct execution: ``python scripts/profiles.py``.
     from mato_common import (  # type: ignore[no-redef]
         SCHEMA_VERSION,
@@ -44,7 +50,6 @@ except ImportError:  # Direct execution: ``python scripts/profiles.py``.
         browser_profiles_dir,
         canonical_naver_blog_url,
         canonical_naver_write_url,
-        googleblog_home,
         parse_positive_slots,
         profile_catalog_path,
         read_json,
@@ -58,7 +63,9 @@ except ImportError:  # Direct execution: ``python scripts/profiles.py``.
     )
     from profile_connector import (  # type: ignore[no-redef]
         connect_profile_context,
+        connector_endpoint,
         open_profile_browser,
+        profile_lock_exists,
     )
 
 
@@ -77,32 +84,43 @@ def profile_path_for_slot(slot: int) -> Path:
     return browser_profiles_dir() / f"naver_{slot}"
 
 
-def legacy_profile_path_for_slot(slot: int) -> Path:
-    """Return the pre-plugin Mato profile location for a numbered slot.
+def _allowed_profile_paths(slot: int) -> tuple[Path, ...]:
+    """Return the one Codex-only persistent profile path for a numbered slot.
 
-    This is a supported local profile location, not a dependency on the old
-    Mato Helper program.  Keeping it selectable lets an existing user continue
-    using a login they created before installing this plugin.
+    Mato Blog Codex does not load, copy, or modify Mato Helper's browser data.
+    Its own numbered Chrome user-data folders retain the Naver session until
+    the user explicitly initializes or deletes that Codex profile.
     """
 
-    if slot <= 0:
-        raise ValueError("프로필 번호는 1 이상이어야 합니다.")
-    name = "naver_browser" if slot == 1 else f"naver_browser_{slot}"
-    return googleblog_home() / name
+    return (profile_path_for_slot(slot),)
 
 
-def _allowed_profile_paths(slot: int) -> tuple[Path, ...]:
-    return (profile_path_for_slot(slot), legacy_profile_path_for_slot(slot))
+def _path_key(path: str | Path) -> str:
+    """Return a cross-platform lexical key without following links."""
+
+    return os.path.normcase(os.path.abspath(os.fspath(Path(path).expanduser())))
+
+
+def _is_link_or_junction(path: Path) -> bool:
+    """Reject profile-folder redirects on POSIX and Windows."""
+
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        return bool(is_junction and is_junction())
+    except OSError:
+        return True
 
 
 def _safe_profile_path(slot: int, raw_path: object | None = None) -> Path:
-    """Return one of the two exact, local paths permitted for a profile slot."""
+    """Return the exact Codex-only local path permitted for a profile slot."""
 
     if raw_path:
         try:
-            requested = Path(str(raw_path)).expanduser().resolve(strict=False)
+            requested = Path(str(raw_path)).expanduser()
             for candidate in _allowed_profile_paths(slot):
-                if requested == candidate.resolve(strict=False):
+                if _path_key(requested) == _path_key(candidate):
                     return candidate
         except (OSError, RuntimeError, ValueError):
             pass
@@ -113,22 +131,24 @@ def _is_safe_profile_directory(path: Path, slot: int | None = None) -> bool:
     """Return whether an existing directory is one permitted local profile path."""
 
     try:
-        resolved = path.resolve(strict=True)
-        if not resolved.is_dir():
+        candidate = path.expanduser()
+        if not candidate.is_dir() or _is_link_or_junction(candidate):
             return False
-        if slot is not None:
-            return any(resolved == candidate.resolve(strict=False) for candidate in _allowed_profile_paths(slot))
-        name = resolved.name
-        if name == "naver_browser":
-            return resolved == legacy_profile_path_for_slot(1).resolve(strict=False)
-        numbered = re.fullmatch(r"naver_(?:browser_)?([1-9][0-9]*)", name, re.IGNORECASE)
-        if numbered:
-            inferred_slot = int(numbered.group(1))
-            return any(
-                resolved == candidate.resolve(strict=False)
-                for candidate in _allowed_profile_paths(inferred_slot)
-            )
-        return False
+        name = candidate.name
+        if slot is None:
+            numbered = PROFILE_DIR_RE.fullmatch(name)
+            if not numbered:
+                return False
+            slot = int(numbered.group(1))
+        expected = profile_path_for_slot(slot)
+        if _path_key(candidate) != _path_key(expected):
+            return False
+        resolved = candidate.resolve(strict=True)
+        root = browser_profiles_dir().resolve(strict=True)
+        if resolved != root / f"naver_{slot}":
+            return False
+        numbered = re.fullmatch(r"naver_([1-9][0-9]*)", name, re.IGNORECASE)
+        return bool(numbered and int(numbered.group(1)) == slot)
     except (OSError, RuntimeError, ValueError):
         return False
 
@@ -167,7 +187,7 @@ def _new_profile(slot: int, *, source: str = "created") -> dict[str, Any]:
 
 
 def _normalize_profile(raw: Mapping[str, Any], slot_hint: int | None = None) -> dict[str, Any]:
-    """Normalize legacy/current metadata while discarding unknown secret fields."""
+    """Normalize profile metadata while discarding unknown secret fields."""
 
     raw_slot = raw.get("slot", slot_hint)
     try:
@@ -204,8 +224,9 @@ def _normalize_profile(raw: Mapping[str, Any], slot_hint: int | None = None) -> 
         "sample_count": sample_count,
         "updated_at": raw_voice.get("updated_at") or None,
     }
-    # Only exact, local slot paths are accepted.  This retains a legitimate
-    # pre-plugin profile without accepting arbitrary user-data directories.
+    # Only the exact Codex-owned slot path is accepted. Catalog edits or an
+    # older installation can never redirect a slot into another program's
+    # Chrome data directory.
     selected_path = _safe_profile_path(slot, raw.get("profile_path"))
     profile["profile_path"] = str(selected_path)
     profile["profile_exists"] = _is_safe_profile_directory(selected_path, slot)
@@ -258,30 +279,13 @@ def save_catalog(profiles: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
 def discover_existing_profiles(
     profiles: Iterable[Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[int]]:
-    """Merge bundled and pre-plugin local profile folders by numbered slot."""
+    """Discover Codex-only numbered Chrome profile folders by slot."""
 
     current = {
         int(profile["slot"]): _normalize_profile(profile)
         for profile in (profiles or [])
     }
     discovered: list[int] = []
-    # Prefer the exact legacy path when no record exists: it may hold the
-    # user's existing normal Chrome login and does not need to be copied.
-    legacy_root = googleblog_home()
-    if legacy_root.exists():
-        for path in legacy_root.iterdir():
-            if path.name == "naver_browser":
-                slot = 1
-            else:
-                match = re.fullmatch(r"naver_browser_([1-9][0-9]*)", path.name, re.IGNORECASE)
-                slot = int(match.group(1)) if match else 0
-            if not slot or slot in current or not _is_safe_profile_directory(path, slot):
-                continue
-            profile = _new_profile(slot, source="legacy_discovered")
-            profile["profile_path"] = str(path)
-            profile["profile_exists"] = True
-            current[slot] = profile
-            discovered.append(slot)
     root = browser_profiles_dir()
     if root.exists():
         for path in root.iterdir():
@@ -368,10 +372,15 @@ def add_profile(
         profile["write_url"] = canonical_naver_write_url(blog_url)
     profile["source"] = "created"
     profile["updated_at"] = timestamp_kst()
-    profile_path_for_slot(slot).mkdir(parents=True, exist_ok=True)
-    profile["profile_exists"] = _is_safe_profile_directory(profile_path_for_slot(slot))
+    profile_path = profile_path_for_slot(slot)
+    existed_before = _is_safe_profile_directory(profile_path, slot)
+    profile_path.mkdir(parents=True, exist_ok=True)
+    profile["profile_exists"] = _is_safe_profile_directory(profile_path, slot)
     if not profile["profile_exists"]:
         raise ValueError("프로필 폴더가 브라우저 프로필 루트 밖을 가리켜 등록을 중단했습니다.")
+    if not existed_before:
+        profile["login_status"] = "needs_login"
+        profile["last_checked_at"] = None
 
     if existing_index is None:
         profiles.append(profile)
@@ -415,9 +424,9 @@ def adopt_profile_path(slot: int, profile_path: str | Path) -> dict[str, Any]:
     """
 
     selected = _safe_profile_path(slot, profile_path)
-    requested = Path(profile_path).expanduser().resolve(strict=False)
-    if selected.resolve(strict=False) != requested:
-        raise ValueError("프로필 경로는 해당 슬롯의 naver_N 또는 기존 naver_browser 경로여야 합니다.")
+    requested = Path(profile_path).expanduser()
+    if _path_key(selected) != _path_key(requested):
+        raise ValueError("프로필 경로는 해당 슬롯의 mato-blog-codex/browser_profiles/naver_N 경로여야 합니다.")
     if not _is_safe_profile_directory(selected, slot):
         raise ValueError(f"안전한 기존 프로필 폴더가 아닙니다: {selected}")
 
@@ -434,6 +443,86 @@ def adopt_profile_path(slot: int, profile_path: str | Path) -> dict[str, Any]:
         save_catalog(profiles)
         return _normalize_profile(profile)
     raise ValueError(f"프로필 {slot}번이 등록되어 있지 않습니다.")
+
+
+def reset_profile(slot: int, *, confirmation: str) -> dict[str, Any]:
+    """Reset only one Codex-owned browser profile after exact confirmation."""
+
+    expected_confirmation = f"RESET-{slot}"
+    if confirmation != expected_confirmation:
+        raise ValueError(f"프로필 초기화 확인값은 정확히 {expected_confirmation} 이어야 합니다.")
+
+    catalog = load_catalog()
+    get_profile(slot, catalog=catalog)
+    profile_path = profile_path_for_slot(slot)
+    if connector_endpoint(profile_path) or profile_lock_exists(profile_path):
+        raise RuntimeError(
+            f"프로필 {slot} Chrome이 열려 있거나 잠겨 있습니다. "
+            "작성 중인 글을 확인하고 해당 전용 창을 정상 종료한 뒤 다시 시도하세요."
+        )
+
+    profile_existed = os.path.lexists(os.fspath(profile_path))
+    if profile_existed and not _is_safe_profile_directory(profile_path, slot):
+        raise ValueError(f"초기화할 프로필 경로가 안전하지 않습니다: {profile_path}")
+
+    # Commit the conservative catalog state before changing browser bytes. If
+    # this atomic write fails, the existing Chrome profile remains untouched
+    # and cannot be paired with a stale ``ready`` status after a partial reset.
+    profiles = [dict(profile) for profile in catalog["profiles"]]
+    updated: dict[str, Any] | None = None
+    for index, profile in enumerate(profiles):
+        if int(profile["slot"]) != slot:
+            continue
+        profile["profile_path"] = str(profile_path)
+        profile["profile_exists"] = True
+        profile["login_status"] = "needs_login"
+        profile["last_checked_at"] = None
+        profile["source"] = "reset"
+        profile["updated_at"] = timestamp_kst()
+        profiles[index] = profile
+        saved = save_catalog(profiles)
+        updated = get_profile(slot, catalog=saved)
+        break
+    if updated is None:
+        raise ValueError(f"프로필 {slot}번이 등록되어 있지 않습니다.")
+
+    backup_path: Path | None = None
+    if profile_existed:
+        backup_path = profile_path.parent / (
+            f".{profile_path.name}.reset-{os.getpid()}-{time.time_ns()}"
+        )
+        profile_path.replace(backup_path)
+
+    try:
+        profile_path.mkdir(parents=True, exist_ok=False)
+        if not _is_safe_profile_directory(profile_path, slot):
+            raise RuntimeError("새 프로필 폴더의 안전성을 확인하지 못했습니다.")
+        if backup_path is not None:
+            shutil.rmtree(backup_path)
+    except Exception as exc:
+        try:
+            if profile_path.is_dir() and not any(profile_path.iterdir()):
+                profile_path.rmdir()
+            if backup_path is not None and backup_path.exists() and not profile_path.exists():
+                backup_path.replace(profile_path)
+        except OSError:
+            pass
+        raise RuntimeError(f"프로필 {slot} 초기화를 완료하지 못했습니다: {exc}") from exc
+
+    # Re-normalize the derived folder flag after creating the fresh directory;
+    # the already-saved login state remains ``needs_login`` even if a later
+    # metadata operation is interrupted.
+    updated = _normalize_profile(updated)
+    return {
+        "slot": slot,
+        "name": updated["name"],
+        "account_alias": updated["account_alias"],
+        "blog_url": updated["blog_url"],
+        "profile_path": updated["profile_path"],
+        "profile_exists": updated["profile_exists"],
+        "login_status": updated["login_status"],
+        "reset": True,
+    }
 
 
 def _is_login_page(page: Any) -> bool:
@@ -535,7 +624,8 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
         raise ValueError("--timeout은 1초 이상이어야 합니다.")
 
     user_data_dir = Path(str(profile["profile_path"]))
-    user_data_dir.mkdir(parents=True, exist_ok=True)
+    if not _is_safe_profile_directory(user_data_dir, int(profile["slot"])):
+        raise RuntimeError(f"프로필 폴더가 없거나 안전하지 않습니다: {user_data_dir}")
     start_url, write_url = _profile_check_urls(profile)
     login_only = write_url is None
     deadline = time.monotonic() + timeout_seconds
@@ -660,7 +750,9 @@ def check_profile(
         "profile_path": profile["profile_path"],
         "profile_path_exists": path_exists,
         "login_check_performed": login,
-        "login_status": profile["login_status"],
+        "login_status": profile["login_status"] if login else "not_checked",
+        "last_login_status": profile["login_status"],
+        "last_checked_at": profile.get("last_checked_at"),
         "session_source": "plugin" if login else None,
     }
     if not login:
@@ -811,7 +903,7 @@ def _profile_table(profiles: Sequence[Mapping[str, Any]]) -> str:
     """Render a user-facing profile table."""
 
     lines = [
-        "| 번호 | 계정 별칭 | 블로그 URL | 프로필 폴더 | 로그인 상태 | 문체 상태 | 최종 확인 |",
+        "| 번호 | 계정 별칭 | 블로그 URL | 프로필 폴더 | 마지막 로그인 확인 | 문체 상태 | 확인 시각 |",
         "|---:|---|---|---|---|---|---|",
     ]
     for profile in profiles:
@@ -878,6 +970,11 @@ def build_parser() -> argparse.ArgumentParser:
     edit_parser.add_argument("--alias", help="새 계정 별칭; 빈 문자열은 별칭 삭제")
     edit_parser.add_argument("--blog-url", help="새 네이버 블로그 ID/URL; 빈 문자열은 삭제")
     edit_parser.add_argument("--json", action="store_true")
+
+    reset_parser = subparsers.add_parser("reset", help="프로필 로그인 데이터를 명시적으로 초기화")
+    _add_slot_arguments(reset_parser)
+    reset_parser.add_argument("--confirm", required=True, help="정확한 RESET-N 확인값")
+    reset_parser.add_argument("--json", action="store_true")
 
     check_parser = subparsers.add_parser("check", help="프로필 폴더 또는 로그인 확인")
     _add_slot_arguments(check_parser)
@@ -955,6 +1052,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blog_url=args.blog_url,
             )
             _print_value(profile, as_json=args.json)
+        elif args.subcommand == "reset":
+            result = reset_profile(
+                _resolve_slot(args),
+                confirmation=args.confirm,
+            )
+            _print_value(result, as_json=args.json)
         elif args.subcommand == "check":
             result = check_profile(
                 _resolve_slot(args),

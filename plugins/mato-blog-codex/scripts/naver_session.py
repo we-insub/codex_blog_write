@@ -18,7 +18,8 @@ NAVER_ORIGINS = (
     "https://blog.naver.com",
 )
 AUTH_COOKIE_NAMES = ("NID_AUT", "NID_SES")
-PERSIST_SECONDS = 30 * 24 * 60 * 60
+PERSIST_SECONDS = 90 * 24 * 60 * 60
+RENEW_BEFORE_SECONDS = 30 * 24 * 60 * 60
 
 
 def _auth_cookie_state(context: Any) -> tuple[bool, bool, dict[str, Mapping[str, Any]]]:
@@ -39,16 +40,26 @@ def _auth_cookie_state(context: Any) -> tuple[bool, bool, dict[str, Mapping[str,
         if name in AUTH_COOKIE_NAMES:
             auth[name] = cookie
 
-    has_required = all(name in auth for name in AUTH_COOKIE_NAMES)
     now = time.time()
 
-    def is_persistent(cookie: Mapping[str, Any]) -> bool:
+    def expiry_value(cookie: Mapping[str, Any]) -> float | None:
+        raw_expires = cookie.get("expires", -1)
+        if raw_expires is None or raw_expires == "":
+            raw_expires = -1
         try:
-            expires = float(cookie.get("expires") or -1)
+            return float(raw_expires)
         except (TypeError, ValueError):
-            expires = -1
-        return expires > now + 60
+            return None
 
+    def is_current(cookie: Mapping[str, Any]) -> bool:
+        expires = expiry_value(cookie)
+        return expires is not None and (expires < 0 or expires > now)
+
+    def is_persistent(cookie: Mapping[str, Any]) -> bool:
+        expires = expiry_value(cookie)
+        return expires is not None and expires > now + 60
+
+    has_required = all(name in auth and is_current(auth[name]) for name in AUTH_COOKIE_NAMES)
     persistent = has_required and all(is_persistent(auth[name]) for name in AUTH_COOKIE_NAMES)
     return has_required, persistent, auth
 
@@ -71,6 +82,9 @@ def is_naver_login_required(page: Any, context: Any) -> bool:
     current_url = str(getattr(page, "url", "") or "").lower()
     if "nid.naver.com" in current_url or "nidlogin" in current_url:
         return True
+    # Naver can leave login-shaped links in the DOM after authentication, so
+    # only visible links override cookies. Actual credential fields and the
+    # login URL remain authoritative.
     selectors = (
         'a[href*="nid.naver.com/nidlogin.login"]',
         'a[href*="/nidlogin.login"]',
@@ -168,11 +182,16 @@ def _promote_auth_cookies(context: Any, page: Any, auth: Mapping[str, Mapping[st
         cookie = auth.get(name)
         if not cookie:
             return False
+        raw_expires = cookie.get("expires", -1)
+        if raw_expires is None or raw_expires == "":
+            raw_expires = -1
         try:
-            expires = float(cookie.get("expires") or -1)
+            expires = float(raw_expires)
         except (TypeError, ValueError):
-            expires = -1
-        if expires <= now + 60:
+            return False
+        if expires >= 0 and expires <= now:
+            return False
+        if expires < 0 or expires <= now + RENEW_BEFORE_SECONDS:
             expires = now + PERSIST_SECONDS
         item: dict[str, Any] = {
             "name": name,
@@ -201,8 +220,16 @@ def persistent_login_ready(context: Any, page: Any) -> bool:
     """Ensure Naver auth survives a clean close of this persistent profile."""
 
     has_required, persistent, auth = _auth_cookie_state(context)
-    if persistent:
-        return True
     if not has_required:
         return False
+    if persistent:
+        now = time.time()
+        try:
+            if all(
+                float(auth[name].get("expires") or -1) > now + RENEW_BEFORE_SECONDS
+                for name in AUTH_COOKIE_NAMES
+            ):
+                return True
+        except (KeyError, TypeError, ValueError):
+            pass
     return _promote_auth_cookies(context, page, auth)

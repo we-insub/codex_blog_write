@@ -24,7 +24,7 @@ class OwnedPostTests(unittest.TestCase):
     def test_prepares_owned_url_source_with_bundled_downloader(self) -> None:
         run_dir = self.env.root / "owned"
 
-        def fake_download(_root, target):  # type: ignore[no-untyped-def]
+        def fake_download(target):  # type: ignore[no-untyped-def]
             directory = Path(target)
             folder = directory / "sources" / "items" / "01_내-글-intp_kr-224348902627"
             folder.mkdir(parents=True, exist_ok=True)

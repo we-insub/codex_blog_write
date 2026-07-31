@@ -45,6 +45,24 @@ class FakePage:
         self.waits.append(milliseconds)
 
 
+class SelectiveFakePage(FakePage):
+    def __init__(self, visible_selectors: set[str]) -> None:
+        super().__init__()
+        self.visible_selectors = visible_selectors
+
+    def locator(self, selector: str) -> FakeLocator:
+        return FakeLocator(selector in self.visible_selectors)
+
+
+class HiddenLoginLinkPage(FakePage):
+    def locator(self, selector: str) -> FakeLocator:
+        if "nidlogin.login" in selector:
+            locator = FakeLocator(False)
+            locator.count = lambda: 1  # type: ignore[method-assign]
+            return locator
+        return FakeLocator(False)
+
+
 class FakeContext:
     def __init__(self, cookies: list[dict[str, object]]) -> None:
         self.cookie_rows = [dict(cookie) for cookie in cookies]
@@ -88,9 +106,26 @@ class NaverSessionTests(unittest.TestCase):
         self.assertTrue(all(float(row["expires"]) > time.time() for row in context.added))
         self.assertEqual(page.waits, [1_000])
 
-    def test_existing_persistent_cookies_are_not_rewritten(self) -> None:
+    def test_long_lived_persistent_cookies_are_not_rewritten(self) -> None:
+        context = FakeContext(auth_cookies(time.time() + naver_session.PERSIST_SECONDS * 2))
+        self.assertTrue(naver_session.persistent_login_ready(context, FakePage()))
+        self.assertEqual(context.added, [])
+
+    def test_near_expiry_persistent_cookies_are_renewed_on_use(self) -> None:
         context = FakeContext(auth_cookies(time.time() + 86_400))
         self.assertTrue(naver_session.persistent_login_ready(context, FakePage()))
+        self.assertTrue(
+            all(
+                float(row["expires"]) > time.time() + naver_session.RENEW_BEFORE_SECONDS
+                for row in context.added
+            )
+        )
+
+    def test_expired_positive_cookies_are_not_resurrected(self) -> None:
+        context = FakeContext(auth_cookies(time.time() - 60))
+        self.assertFalse(naver_session.has_naver_login(context))
+        self.assertTrue(naver_session.is_naver_login_required(FakePage(), context))
+        self.assertFalse(naver_session.persistent_login_ready(context, FakePage()))
         self.assertEqual(context.added, [])
 
     def test_missing_auth_cookie_is_not_treated_as_login(self) -> None:
@@ -107,6 +142,16 @@ class NaverSessionTests(unittest.TestCase):
     def test_authenticated_home_does_not_require_login(self) -> None:
         context = FakeContext(auth_cookies(time.time() + 86_400))
         self.assertFalse(naver_session.is_naver_login_required(FakePage(), context))
+
+    def test_hidden_login_shaped_home_link_does_not_override_valid_profile_cookies(self) -> None:
+        context = FakeContext(auth_cookies(time.time() + 86_400))
+        page = HiddenLoginLinkPage()
+        self.assertFalse(naver_session.is_naver_login_required(page, context))
+
+    def test_visible_login_link_overrides_stale_profile_cookies(self) -> None:
+        context = FakeContext(auth_cookies(time.time() + 86_400))
+        page = SelectiveFakePage({'a[href*="nid.naver.com/nidlogin.login"]'})
+        self.assertTrue(naver_session.is_naver_login_required(page, context))
 
     def test_keep_login_option_is_selected_in_page(self) -> None:
         page = FakePage(url="https://nid.naver.com/nidlogin.login")

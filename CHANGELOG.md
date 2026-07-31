@@ -4,7 +4,26 @@
 
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/)의 분류 방식을 참고하며, 버전은 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
-## [Unreleased]
+## [0.2.0] - 2026-07-31
+
+### 추가
+
+- Windows 10/11과 macOS에서 전용 Python 환경, Chrome 탐색, 네이티브 클립보드와 영구 프로필 연결기를 검증하는 교차 플랫폼 테스트
+- 오래된 기본 Python이 선택돼도 기존 전용 가상환경 또는 설치된 Python 3.10+으로 다시 실행하는 Windows·macOS 초기 설정 실행기
+- Windows OneDrive·조직 정책으로 이동된 실제 바탕화면 Known Folder에 실행 결과를 저장하는 경로 탐색
+- 정확한 `RESET-N` 확인과 닫힌 프로필 조건을 요구하는 번호별 프로필 초기화 기능
+
+### 수정
+
+- Mato Helper와 분리된 `~/.googleblog/mato-blog-codex/browser_profiles/naver_N`만 사용하고 프로그램 업데이트·메타데이터 수정 시 기존 프로필 데이터를 보존
+- macOS `SingletonLock`과 Windows `lockfile`의 실제 활성 상태를 확인해 열린 프로필만 차단하고, 강제 종료 뒤 남은 오래된 잠금은 Chrome이 정상 회수하도록 수정
+- 심볼릭 링크·Windows junction으로 다른 프로필 또는 외부 폴더를 가리키는 경로를 차단
+- 로그인 확인 상태를 현재 실시간 상태로 오인하지 않도록 마지막 확인 상태·시각으로 표시하고, 사라진 프로필을 다시 만들 때 과거 `ready` 상태를 폐기
+- 로그인 상태 유지 쿠키를 사용 시점마다 갱신하되 이미 만료된 쿠키는 되살리지 않도록 수정
+- 프로필 초기화 전에 로그인 상태를 원자 저장하고 파일 처리 실패 시 기존 데이터로 롤백해 상태와 실제 폴더가 어긋나지 않도록 수정
+- `DevToolsActivePort`의 WebSocket 경로와 실제 로컬 Chrome 응답을 함께 확인해 오래된 포트에 잘못 연결되는 문제 차단
+- 배포 모듈에 남아 있던 외부 Mato Helper 프로필·로그인·업로드·프롬프트 연결 코드를 제거하고 내장 URL 다운로드만 유지
+- Windows 전용으로 남아 있던 README·Remote·문제 해결 문서를 Windows/macOS 공통 배포 안내로 갱신
 
 ### 변경
 

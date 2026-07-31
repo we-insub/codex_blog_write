@@ -34,13 +34,15 @@ class ProfileCatalogTests(unittest.TestCase):
         persisted = json.loads(mato_common.profile_catalog_path().read_text(encoding="utf-8"))
         self.assertEqual([item["slot"] for item in persisted["profiles"]], [1, 2, 10])
 
-    def test_discovers_existing_legacy_slot_without_copying_its_browser_data(self) -> None:
-        legacy = profiles.legacy_profile_path_for_slot(1)
-        legacy.mkdir(parents=True, exist_ok=True)
+    def test_ignores_mato_helper_slot_and_uses_codex_numbered_profile(self) -> None:
+        helper_profile = mato_common.googleblog_home() / "browser_profiles" / "naver_1"
+        helper_profile.mkdir(parents=True, exist_ok=True)
+        codex_profile = mato_common.browser_profiles_dir() / "naver_1"
+        codex_profile.mkdir(parents=True, exist_ok=True)
         catalog = profiles.load_catalog()
         profile = profiles.get_profile(1, catalog=catalog)
-        self.assertEqual(Path(profile["profile_path"]), legacy)
-        self.assertEqual(profile["source"], "legacy_discovered")
+        self.assertEqual(Path(profile["profile_path"]), codex_profile)
+        self.assertEqual(profile["source"], "discovered")
         self.assertTrue(profile["profile_exists"])
 
     def test_add_and_edit_profile_store_only_derived_local_metadata(self) -> None:
@@ -56,6 +58,25 @@ class ProfileCatalogTests(unittest.TestCase):
         catalog_text = mato_common.profile_catalog_path().read_text(encoding="utf-8")
         self.assertNotIn("password", catalog_text.casefold())
         self.assertNotIn("cookie", catalog_text.casefold())
+
+    def test_profile_storage_is_codex_only_and_survives_metadata_replacement(self) -> None:
+        added = profiles.add_profile(999, alias="첫 별칭", blog_url="owner999")
+        profile_path = Path(added["profile_path"])
+        marker = profile_path / "login-state-marker"
+        marker.write_text("preserve", encoding="utf-8")
+
+        replaced = profiles.add_profile(
+            999,
+            alias="바뀐 별칭",
+            blog_url="owner999",
+            replace=True,
+        )
+
+        expected_root = mato_common.googleblog_home() / "mato-blog-codex"
+        self.assertEqual(mato_common.profile_catalog_path(), expected_root / "naver_profiles.json")
+        self.assertEqual(profile_path.parent, expected_root / "browser_profiles")
+        self.assertEqual(Path(replaced["profile_path"]), profile_path)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "preserve")
 
     def test_discovered_slot_can_be_enriched_without_replace(self) -> None:
         path = mato_common.browser_profiles_dir() / "naver_4"
@@ -87,6 +108,91 @@ class ProfileCatalogTests(unittest.TestCase):
         browser_check.assert_not_called()
         self.assertFalse(result["login_check_performed"])
         self.assertTrue(result["profile_path_exists"])
+        self.assertEqual(result["login_status"], "not_checked")
+        self.assertEqual(result["last_login_status"], "needs_login")
+
+    def test_recreating_a_missing_profile_never_keeps_stale_ready_status(self) -> None:
+        added = profiles.add_profile(1, alias="계정", blog_url="owner1")
+        profiles._update_login_status(1, "ready")
+        Path(added["profile_path"]).rmdir()
+
+        replaced = profiles.add_profile(
+            1,
+            alias="계정",
+            blog_url="owner1",
+            replace=True,
+        )
+
+        self.assertEqual(replaced["login_status"], "needs_login")
+        self.assertIsNone(replaced["last_checked_at"])
+
+    def test_reset_requires_exact_confirmation_and_changes_no_bytes_on_rejection(self) -> None:
+        added = profiles.add_profile(1, alias="계정", blog_url="owner1")
+        marker = Path(added["profile_path"]) / "Cookies"
+        marker.write_bytes(b"private-profile-data")
+
+        with self.assertRaisesRegex(ValueError, "RESET-1"):
+            profiles.reset_profile(1, confirmation="RESET")
+
+        self.assertEqual(marker.read_bytes(), b"private-profile-data")
+
+    def test_reset_catalog_failure_leaves_existing_profile_bytes_untouched(self) -> None:
+        added = profiles.add_profile(1, alias="계정", blog_url="owner1")
+        marker = Path(added["profile_path"]) / "Cookies"
+        marker.write_bytes(b"private-profile-data")
+        profiles._update_login_status(1, "ready")
+
+        with patch.object(profiles, "save_catalog", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                profiles.reset_profile(1, confirmation="RESET-1")
+
+        self.assertEqual(marker.read_bytes(), b"private-profile-data")
+        self.assertEqual(profiles.get_profile(1)["login_status"], "ready")
+        self.assertEqual(
+            list(marker.parent.parent.glob(f".{marker.parent.name}.reset-*")),
+            [],
+        )
+
+    def test_reset_filesystem_failure_restores_existing_profile_bytes(self) -> None:
+        added = profiles.add_profile(1, alias="계정", blog_url="owner1")
+        marker = Path(added["profile_path"]) / "Cookies"
+        marker.write_bytes(b"private-profile-data")
+        profiles._update_login_status(1, "ready")
+
+        with patch.object(profiles.shutil, "rmtree", side_effect=OSError("delete failed")):
+            with self.assertRaisesRegex(RuntimeError, "delete failed"):
+                profiles.reset_profile(1, confirmation="RESET-1")
+
+        self.assertEqual(marker.read_bytes(), b"private-profile-data")
+        self.assertEqual(profiles.get_profile(1)["login_status"], "needs_login")
+        self.assertEqual(
+            list(marker.parent.parent.glob(f".{marker.parent.name}.reset-*")),
+            [],
+        )
+
+    def test_reset_affects_only_selected_profile_and_preserves_public_metadata(self) -> None:
+        first = profiles.add_profile(1, alias="계정1", blog_url="owner1")
+        second = profiles.add_profile(2, alias="계정2", blog_url="owner2")
+        first_marker = Path(first["profile_path"]) / "Cookies"
+        second_marker = Path(second["profile_path"]) / "Cookies"
+        first_marker.write_bytes(b"first")
+        second_marker.write_bytes(b"second")
+        profiles._update_login_status(1, "ready")
+
+        result = profiles.reset_profile(1, confirmation="RESET-1")
+
+        self.assertTrue(result["reset"])
+        self.assertEqual(result["account_alias"], "계정1")
+        self.assertEqual(result["blog_url"], "https://blog.naver.com/owner1")
+        self.assertEqual(result["login_status"], "needs_login")
+        self.assertFalse(first_marker.exists())
+        self.assertEqual(second_marker.read_bytes(), b"second")
+
+    def test_reset_refuses_an_open_profile(self) -> None:
+        profiles.add_profile(1, alias="계정", blog_url="owner1")
+        with patch.object(profiles, "connector_endpoint", return_value="http://127.0.0.1:43123"):
+            with self.assertRaisesRegex(RuntimeError, "열려 있거나 잠겨"):
+                profiles.reset_profile(1, confirmation="RESET-1")
 
     def test_configured_profile_check_opens_naver_home_before_writer(self) -> None:
         profile = profiles.add_profile(1, alias="계정", blog_url="owner1")
@@ -171,6 +277,11 @@ class ProfileCatalogTests(unittest.TestCase):
         except (OSError, NotImplementedError) as exc:
             self.skipTest(f"directory symlinks unavailable: {exc}")
         self.assertFalse(profiles._is_safe_profile_directory(link))
+        self.assertFalse(profiles._is_safe_profile_directory(link, slot=9))
+        normalized = profiles._normalize_profile(
+            {"slot": 9, "profile_path": str(link), "source": "created"}
+        )
+        self.assertFalse(normalized["profile_exists"])
         catalog = profiles.load_catalog()
         self.assertNotIn(9, [item["slot"] for item in catalog["profiles"]])
 
