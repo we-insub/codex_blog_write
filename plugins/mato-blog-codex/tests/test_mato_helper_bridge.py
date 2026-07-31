@@ -16,151 +16,26 @@ if str(SCRIPTS_DIR) not in sys.path:
 import mato_helper_bridge as bridge
 
 
-class FakeStore:
-    def __init__(self, profile_path: Path) -> None:
-        self.profile_path = profile_path
+class BundledSourceDownloadTests(unittest.TestCase):
+    def test_public_cli_rejects_removed_helper_commands(self) -> None:
+        for command in ("doctor", "profile-check", "draft", "prompt-export"):
+            with self.subTest(command=command), mock.patch.object(sys, "stderr"):
+                with self.assertRaises(SystemExit) as raised:
+                    bridge.main([command])
+            self.assertEqual(raised.exception.code, 2)
 
-    def get_playwright_profile(self, _name: str) -> str:
-        return str(self.profile_path)
-
-    def ensure_playwright_profile(self, name: str, path: str) -> dict[str, object]:
-        selected = Path(path)
-        selected.mkdir(parents=True, exist_ok=True)
-        self.profile_path = selected
-        return {"name": name, "path": str(selected), "exists": True}
-
-    def list_playwright_profiles(self) -> list[dict[str, object]]:
-        return [{"name": "naver_1", "path": str(self.profile_path), "exists": self.profile_path.exists()}]
-
-
-class FakeWriter:
-    last: "FakeWriter | None" = None
-
-    def __init__(self, update_status_func=None, profile_dir=None):  # type: ignore[no-untyped-def]
-        self.update_status_func = update_status_func
-        self.profile_dir = profile_dir
-        self.stopped = False
-        self.login_args = None
-        FakeWriter.last = self
-
-    def login(self, naver_id, naver_pw, target_url=None, login_timeout_sec=300):  # type: ignore[no-untyped-def]
-        self.login_args = (naver_id, naver_pw, target_url, login_timeout_sec)
-        return True
-
-    def stop(self) -> None:
-        self.stopped = True
-
-
-class MatoHelperBridgeTests(unittest.TestCase):
-    def test_profile_one_maps_to_existing_naver_one(self) -> None:
-        payload = bridge.profile_check_payload(
-            1,
-            "https://blog.naver.com/intp_kr?Redirect=Write",
-            interactive_login=True,
+    def test_source_has_no_external_helper_runtime_hooks(self) -> None:
+        source = Path(bridge.__file__).read_text(encoding="utf-8")
+        forbidden = (
+            "MATO_HELPER_ROOT",
+            "google-blog-auto",
+            "local_agent.local_store",
+            "local_agent.naver_draft",
+            "naver_playwright",
         )
-        self.assertEqual(payload["profile_name"], "naver_1")
-        self.assertEqual(payload["mode"], "create_login")
-        self.assertTrue(payload["interactive_login"])
-
-    def test_profile_slots_have_no_fixed_upper_limit(self) -> None:
-        self.assertEqual(bridge.profile_name(999_999), "naver_999999")
-
-    def test_unregistered_profile_one_adopts_existing_mato_legacy_profile(self) -> None:
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            legacy = root / "legacy-naver-browser"
-            legacy.mkdir()
-            store = FakeStore(root / "unregistered")
-            store.get_playwright_profile = lambda _name: ""  # type: ignore[method-assign]
-            expected_home = root / "home"
-            with (
-                mock.patch.object(bridge, "_load_store", return_value=store),
-                mock.patch.object(bridge.Path, "home", return_value=expected_home),
-            ):
-                (expected_home / ".googleblog").mkdir(parents=True)
-                adopted = expected_home / ".googleblog" / "naver_browser"
-                adopted.mkdir()
-                result = bridge.resolve_profile_path(root, 1, create=False)
-        self.assertEqual(result, adopted.resolve())
-
-    def test_draft_payload_uses_existing_profile_and_defaults_to_draft(self) -> None:
-        with TemporaryDirectory() as temporary:
-            payload = bridge.draft_payload(
-                1,
-                temporary,
-                "https://blog.naver.com/intp_kr?Redirect=Write",
-            )
-        self.assertEqual(payload["profile_name"], "naver_1")
-        self.assertEqual(payload["publish_mode"], "draft")
-        self.assertTrue(payload["is_draft"])
-        self.assertEqual(payload["max_count"], 1)
-
-    def test_direct_profile_check_uses_existing_writer_without_credentials(self) -> None:
-        with TemporaryDirectory() as temporary:
-            profile = Path(temporary) / "naver_1"
-            store = FakeStore(profile)
-            writer_module = SimpleNamespace(NaverPlaywright=FakeWriter)
-            with (
-                mock.patch.object(bridge, "_load_store", return_value=store),
-                mock.patch.object(bridge.importlib, "import_module", return_value=writer_module),
-                mock.patch.object(bridge, "_record_profile_status") as record_status,
-            ):
-                result = bridge.run_direct_profile_check(
-                    Path(temporary),
-                    1,
-                    "https://blog.naver.com/intp_kr?Redirect=Write",
-                    timeout_seconds=120,
-                )
-        self.assertTrue(result["login_ready"])
-        self.assertEqual(result["profile_name"], "naver_1")
-        self.assertEqual(FakeWriter.last.login_args[:2], ("", ""))
-        self.assertTrue(FakeWriter.last.stopped)
-        record_status.assert_called_once_with(1, True)
-
-    def test_direct_draft_returns_safe_result_without_session_data(self) -> None:
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            profile = root / "naver_1"
-            profile.mkdir()
-            work = root / "posts"
-            work.mkdir()
-            store = FakeStore(profile)
-
-            def run_naver_draft_upload(**_kwargs):  # type: ignore[no-untyped-def]
-                return {
-                    "mode": "draft",
-                    "processed": 1,
-                    "succeeded": 1,
-                    "failed": 0,
-                    "skipped": 0,
-                    "elapsed_sec": 2,
-                    "cookie": "must-not-return",
-                    "entries": [
-                        {
-                            "folder": "post-1",
-                            "title": "테스트",
-                            "ok": True,
-                            "save_ok": True,
-                            "completed": 4,
-                            "session": "must-not-return",
-                        }
-                    ],
-                }
-
-            draft_module = SimpleNamespace(run_naver_draft_upload=run_naver_draft_upload)
-            with (
-                mock.patch.object(bridge, "_load_store", return_value=store),
-                mock.patch.object(bridge.importlib, "import_module", return_value=draft_module),
-            ):
-                result = bridge.run_direct_draft(
-                    root,
-                    1,
-                    str(work),
-                    "https://blog.naver.com/intp_kr?Redirect=Write",
-                )
-        self.assertTrue(result["ok"])
-        self.assertNotIn("cookie", str(result))
-        self.assertNotIn("session", str(result))
+        for marker in forbidden:
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, source)
 
     def test_direct_url_download_creates_jpg_and_structured_original_hamchuk(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -232,7 +107,7 @@ class MatoHelperBridgeTests(unittest.TestCase):
                 mock.patch.object(bridge.importlib, "import_module", side_effect=import_module),
                 mock.patch.object(bridge, "_write_structured_original_hamchuk", side_effect=fake_structured),
             ):
-                result = bridge.run_direct_url_download(Path(temporary), str(run_dir))
+                result = bridge.run_direct_url_download(str(run_dir))
 
             hamchuk = source_folder / "원문제목_원본_함축.txt"
             self.assertTrue(result["ok"])
@@ -307,26 +182,6 @@ class MatoHelperBridgeTests(unittest.TestCase):
             self.assertEqual(files, ["image_1.jpg"])
             self.assertTrue((folder / "image_1.jpg").is_file())
             self.assertFalse((folder / "image_1.png").exists())
-
-    def test_doctor_discovers_filesystem_profile(self) -> None:
-        with TemporaryDirectory() as temporary:
-            profile_root = Path(temporary) / "browser_profiles"
-            profile = profile_root / "naver_2"
-            profile.mkdir(parents=True)
-            store = FakeStore(Path(temporary) / "missing")
-            with (
-                mock.patch.object(bridge, "DEFAULT_PROFILE_ROOT", profile_root),
-                mock.patch.object(bridge, "_load_store", return_value=store),
-            ):
-                result = bridge.doctor(Path(temporary))
-        self.assertEqual(result["transport"], "direct-local")
-        self.assertIn("naver_2", [item["name"] for item in result["naver_profiles"]])
-
-    def test_helper_root_requires_existing_bridge_files(self) -> None:
-        with TemporaryDirectory() as temporary:
-            with self.assertRaises(bridge.BridgeError):
-                bridge.helper_root(temporary)
-
 
 if __name__ == "__main__":
     unittest.main()

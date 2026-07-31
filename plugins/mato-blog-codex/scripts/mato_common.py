@@ -60,15 +60,20 @@ def googleblog_home() -> Path:
 
 
 def browser_profiles_dir() -> Path:
-    """Return the directory containing persistent ``naver_N`` profiles."""
+    """Return Codex-only directory containing persistent ``naver_N`` profiles.
 
-    return googleblog_home() / "browser_profiles"
+    This is intentionally distinct from Mato Helper's profile directory.  The
+    numbered Chrome data remains stable for this application until a user
+    explicitly resets a profile.
+    """
+
+    return history_home() / "browser_profiles"
 
 
 def profile_catalog_path() -> Path:
-    """Return the local profile metadata file path."""
+    """Return Codex-only local profile metadata path."""
 
-    return googleblog_home() / "local_agent" / "naver_profiles.json"
+    return history_home() / "naver_profiles.json"
 
 
 def history_home() -> Path:
@@ -178,6 +183,61 @@ def atomic_write_json(path: str | Path, value: JSONValue) -> None:
     atomic_write_text(path, payload + "\n")
 
 
+def _windows_desktop_path() -> Path | None:
+    """Return the current user's Windows Desktop Known Folder when available."""
+
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", ctypes.c_ulong),
+                ("Data2", ctypes.c_ushort),
+                ("Data3", ctypes.c_ushort),
+                ("Data4", ctypes.c_ubyte * 8),
+            ]
+
+        folder_id_desktop = _GUID(
+            0xB4BFCC3A,
+            0xDB2C,
+            0x424C,
+            (ctypes.c_ubyte * 8)(0xB0, 0x29, 0x7F, 0xE9, 0x9A, 0x87, 0xC6, 0x41),
+        )
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+        get_known_folder = shell32.SHGetKnownFolderPath
+        get_known_folder.argtypes = [
+            ctypes.POINTER(_GUID),
+            wintypes.DWORD,
+            wintypes.HANDLE,
+            ctypes.POINTER(ctypes.c_wchar_p),
+        ]
+        get_known_folder.restype = ctypes.c_long
+        free_memory = ole32.CoTaskMemFree
+        free_memory.argtypes = [ctypes.c_void_p]
+        free_memory.restype = None
+
+        path_pointer = ctypes.c_wchar_p()
+        result = get_known_folder(
+            ctypes.byref(folder_id_desktop),
+            0,
+            None,
+            ctypes.byref(path_pointer),
+        )
+        try:
+            if result != 0 or not path_pointer.value:
+                return None
+            return Path(path_pointer.value)
+        finally:
+            if path_pointer:
+                free_memory(ctypes.cast(path_pointer, ctypes.c_void_p))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
 def default_runs_root() -> Path:
     """Return today's Desktop directory for generated research runs.
 
@@ -191,7 +251,10 @@ def default_runs_root() -> Path:
     if override:
         return Path(override).expanduser()
     desktop_override = os.environ.get("MATO_DESKTOP_ROOT")
-    desktop = Path(desktop_override).expanduser() if desktop_override else Path.home() / "Desktop"
+    if desktop_override:
+        desktop = Path(desktop_override).expanduser()
+    else:
+        desktop = _windows_desktop_path() or Path.home() / "Desktop"
     return desktop / now_kst().strftime("%Y-%m-%d")
 
 

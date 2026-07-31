@@ -8,9 +8,9 @@
 방금 작업의 히스토리와 마지막 성공 단계, 재개 위치를 보여줘.
 ```
 
-## `py` 또는 Python을 찾을 수 없음
+## `py`, `python3` 또는 Python을 찾을 수 없음
 
-Windows Python Launcher와 Python 3.10 이상이 설치되어 있는지 확인합니다. 설치 후 새 PowerShell 창을 열고 Codex에 `Mato Blog Codex 초기 설정을 다시 확인해줘`라고 요청합니다.
+Python 3.10 이상이 설치되어 있는지 확인합니다. 내부 초기 설정기는 기존 전용 가상환경을 먼저 확인하고, Windows에서 `py`·`python`·`python3`, macOS에서 `python3.14`부터 `python3.10`·`python3`·`python`을 순서대로 확인합니다. 설치 후 새 PowerShell 또는 터미널 창을 열고 Codex에 `Mato Blog Codex 초기 설정을 다시 확인해줘`라고 요청합니다.
 
 ## Scrapling 또는 Playwright 모듈을 찾을 수 없음
 
@@ -36,15 +36,17 @@ Mato Blog Codex 실행 환경에서 빠진 패키지를 점검하고 초기 설�
 
 휴대폰과 호스트가 같은 ChatGPT 계정·workspace인지 확인합니다. 호스트 PC는 깨어 있고 온라인이며 데스크톱 앱이 실행 중이어야 합니다. 데스크톱 앱의 Remote Control이 켜져 있는지 확인하고 필요하면 사이드바의 **Set up Remote**에서 QR 코드를 다시 연결합니다.
 
-Windows에서 `@Browser`나 Computer Use가 필요한 작업은 세션을 잠금 해제 상태로 유지합니다. 전체 설정은 [모바일 Remote 사용 안내](MOBILE_REMOTE.md)를 참고하십시오.
+Windows 또는 macOS에서 `@Browser`나 Computer Use가 필요한 작업은 화면을 잠금 해제 상태로 유지합니다. 전체 설정은 [모바일 Remote 사용 안내](MOBILE_REMOTE.md)를 참고하십시오.
 
 ## 기존 프로필이 목록에 없음
 
 ```text
-기존 네이버 프로필을 다시 찾고 목록과 경로 상태를 보여줘.
+이 프로그램에서 전에 만든 네이버 프로필을 다시 찾고 목록과 경로 상태를 보여줘.
 ```
 
-기본 경로 `~/.googleblog/browser_profiles/naver_N` 밖에 있는 프로필은 자동 발견되지 않을 수 있습니다. 폴더를 임의로 복사하기 전에 Chrome과 다른 자동화 작업을 모두 닫고, 원본을 백업하십시오.
+자동 발견 범위는 이 프로그램 전용 `~/.googleblog/mato-blog-codex/browser_profiles/naver_N`뿐입니다. 마토헬퍼나 일반 Chrome의 프로필은 가져오지 않습니다.
+
+기본 경로 `~/.googleblog/mato-blog-codex/browser_profiles/naver_N` 밖에 있는 프로필은 자동 발견되지 않을 수 있습니다. 마토헬퍼의 `~/.googleblog/browser_profiles`는 Codex가 사용하지 않습니다. 폴더를 임의로 복사하기 전에 Chrome과 다른 자동화 작업을 모두 닫고, 원본을 백업하십시오.
 
 ## Chrome 프로필이 사용 중이라는 오류
 
@@ -167,7 +169,7 @@ Codex는 업로드 전에 프로필, 블로그 URL, 원고 제목, 저장 방식
 
 ## 히스토리를 쓸 수 없음
 
-사용자 홈의 `~/.googleblog/mato-blog-codex/`와 실행 폴더에 현재 Windows 계정이 쓸 수 있는지 확인합니다. 랜섬웨어 보호나 회사 보안 정책이 차단하는 경우 허용 여부를 관리자에게 확인하십시오.
+사용자 홈의 `~/.googleblog/mato-blog-codex/`와 실행 폴더에 현재 Windows 또는 macOS 계정이 쓸 수 있는지 확인합니다. 랜섬웨어 보호, macOS 개인정보 보호 설정 또는 회사 보안 정책이 차단하는 경우 허용 여부를 관리자에게 확인하십시오.
 
 히스토리를 쓸 수 없는 상태에서는 안전한 재개와 결과 확인이 어려우므로 업로드를 진행하지 않습니다.
 

@@ -46,6 +46,74 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(directory.name, "20260722_140506_서울맛집")
             self.assertTrue((directory / "run.json").is_file())
 
+    def test_runs_root_override_takes_priority_over_desktop_detection(self) -> None:
+        with TemporaryDirectory() as temporary:
+            override = Path(temporary) / "explicit-runs"
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "MATO_RUNS_ROOT": str(override),
+                        "MATO_DESKTOP_ROOT": str(Path(temporary) / "ignored-desktop"),
+                    },
+                    clear=False,
+                ),
+                mock.patch.object(
+                    mato_common,
+                    "_windows_desktop_path",
+                    side_effect=AssertionError("Desktop detection must not run for an override"),
+                ),
+            ):
+                self.assertEqual(mato_common.default_runs_root(), override)
+
+    def test_windows_known_folder_desktop_is_used_before_home_fallback(self) -> None:
+        fixed = datetime(2026, 7, 22, 14, 5, 6, tzinfo=mato_common.KST)
+        with TemporaryDirectory() as temporary:
+            known_desktop = Path(temporary) / "OneDrive" / "Desktop"
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"MATO_RUNS_ROOT": "", "MATO_DESKTOP_ROOT": ""},
+                    clear=False,
+                ),
+                mock.patch.object(
+                    mato_common,
+                    "_windows_desktop_path",
+                    return_value=known_desktop,
+                ),
+                mock.patch.object(mato_common, "now_kst", return_value=fixed),
+            ):
+                self.assertEqual(
+                    mato_common.default_runs_root(),
+                    known_desktop / "2026-07-22",
+                )
+
+    def test_desktop_detection_failure_falls_back_to_home_desktop(self) -> None:
+        fixed = datetime(2026, 7, 22, 14, 5, 6, tzinfo=mato_common.KST)
+        with TemporaryDirectory() as temporary:
+            home = Path(temporary) / "home"
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"MATO_RUNS_ROOT": "", "MATO_DESKTOP_ROOT": ""},
+                    clear=False,
+                ),
+                mock.patch.object(mato_common, "_windows_desktop_path", return_value=None),
+                mock.patch.object(mato_common.Path, "home", return_value=home),
+                mock.patch.object(mato_common, "now_kst", return_value=fixed),
+            ):
+                self.assertEqual(
+                    mato_common.default_runs_root(),
+                    home / "Desktop" / "2026-07-22",
+                )
+
+    @unittest.skipUnless(os.name == "nt", "Windows Known Folder API test")
+    def test_windows_known_folder_helper_returns_an_absolute_path(self) -> None:
+        desktop = mato_common._windows_desktop_path()
+        self.assertIsNotNone(desktop)
+        assert desktop is not None
+        self.assertTrue(desktop.is_absolute())
+
     def test_free_form_and_structured_secrets_are_redacted(self) -> None:
         command = (
             "작업 password=hunter2 token=abc123 cookie: session-value "

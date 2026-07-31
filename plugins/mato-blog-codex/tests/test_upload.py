@@ -139,10 +139,10 @@ class UploadPlanTests(unittest.TestCase):
         image_dir.mkdir()
         bracketed = image_dir / "[IMAGE_1.JPG]"
         bracketed.write_bytes(b"image")
-        self.assertEqual(
-            upload._resolve_image_path(image_dir, "image_1.jpg"),
-            bracketed,
-        )
+        resolved = upload._resolve_image_path(image_dir, "image_1.jpg")
+        self.assertIsNotNone(resolved)
+        self.assertTrue(resolved.is_file())
+        self.assertTrue(resolved.samefile(bracketed))
         self.assertIsNotNone(upload.IMAGE_TAG_RE.fullmatch("[image_2.webp]"))
 
     def test_process_lines_uses_toolbar_actions_url_paste_images_and_tables(self) -> None:
@@ -184,7 +184,8 @@ class UploadPlanTests(unittest.TestCase):
         )
         insert_table.assert_called_once_with(frame, 1, 1, {(0, 0): "셀 내용"})
         upload_image.assert_called_once_with(image_path)
-        page.keyboard.press.assert_any_call("Control+V")
+        paste_key = "Meta+V" if upload.platform.system() == "Darwin" else "Control+V"
+        page.keyboard.press.assert_any_call(paste_key)
         page.keyboard.type.assert_called_once_with(
             "일반 본문", delay=upload.BODY_TYPING_DELAY_MS
         )

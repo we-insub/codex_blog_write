@@ -24,30 +24,29 @@ Mato Blog Codex는 네이버 공개 검색 결과 또는 사용자가 지정한 
 
 > 업로드가 시작된 뒤 결과 URL 확인이 끝날 때까지 해당 프로필 Chrome 창을 직접 닫지 마십시오. 창을 닫으면 진행 중인 타이핑·이미지 삽입·발행 확인이 즉시 중단됩니다.
 
+> 프로필 생성·정보 수정·플러그인 업데이트는 기존 로그인 폴더를 초기화하지 않습니다. 초기화는 사용자가 정확한 프로필 번호를 명시하고 `RESET-N` 확인을 제공한 경우에만 수행됩니다. 네이버가 서버에서 세션을 만료시키는 경우에는 같은 프로필에서 정상 재로그인이 필요할 수 있습니다.
+
 ## 요구 사항
 
-- Windows 10 또는 Windows 11
+- Windows 10/11 또는 macOS
 - Google Chrome
 - Git
 - 최신 ChatGPT/Codex 데스크톱 앱
 - Codex의 Browser 플러그인과 Computer Use
-- Python 3.10 이상을 실행할 수 있는 Windows `py` 런처
+- Python 3.10 이상 (`py` 또는 `python`/`python3`)
 
 네이버 비밀번호는 플러그인에 입력하지 않습니다. 처음 로그인하거나 세션이 만료됐을 때 표시되는 전용 Chrome 창에서 사용자가 직접 정상 로그인합니다.
 
 ### 지원 운영체제
 
-현재 배포 버전은 **Windows 10/11 전용**입니다. 업로더 일부에는 macOS의 `pbcopy`와 `Command+V` 처리가 들어 있지만, 초기 실행 환경 설치와 Google Chrome 실행 파일 탐색이 Windows 전용이므로 macOS에서 전체 작업을 실행할 수 없습니다.
+현재 배포 버전은 **Windows 10/11과 macOS**를 지원합니다. 운영체제별 차이는 플러그인이 내부에서 처리합니다.
 
-macOS 지원은 단순한 사용자 설정이 아니라 다음 코드 이식과 실제 기기 검증이 먼저 필요합니다.
+- Chrome: Windows의 표준 설치 경로와 macOS의 `/Applications`·사용자 `Applications`를 탐색
+- Python 환경: Windows는 `.venv/Scripts/python.exe`, macOS는 `.venv/bin/python` 사용
+- 링크카드 붙여넣기: Windows는 `clip`·`Control+V`, macOS는 `pbcopy`·`Command+V` 사용
+- 프로필 창: Windows와 macOS 모두 로컬 전용 DevTools 연결기로 같은 영구 프로필에 재연결
 
-- macOS용 Google Chrome 실행 파일 탐색
-- Windows 전용 초기 설치 제한 해제
-- macOS Python 가상환경과 프로필 연결기 검증
-- 네이버 로그인·템플릿·표·이미지·임시저장·발행 통합 테스트
-- macOS 설치 및 권한 안내 추가
-
-따라서 저장소를 공유할 때는 현재 지원 환경을 `Windows 10/11`로 안내해야 합니다.
+Chrome과 Python 3.10 이상은 각 PC에 먼저 설치해야 합니다. 새 PC에서는 운영체제와 관계없이 프로필별 최초 로그인을 한 번 수행합니다.
 
 ## 처음 공유받은 사용자의 설정 목록
 
@@ -55,7 +54,7 @@ macOS 지원은 단순한 사용자 설정이 아니라 다음 코드 이식과 
 
 | 구분 | 사용자가 설정할 값 | 필수 여부 | 설정 시점 |
 | --- | --- | --- | --- |
-| 실행 환경 | Windows 10/11, Chrome, Git, Codex, Python 3.10 이상 | 필수 | PC당 1회 |
+| 실행 환경 | Windows 10/11 또는 macOS, Chrome, Git, Codex, Python 3.10 이상 | 필수 | PC당 1회 |
 | 네이버 프로필 | 프로필 번호, 별칭, 블로그 ID 또는 기본 블로그 URL | 필수 | 계정당 1회 |
 | 네이버 로그인 | 각 전용 Chrome에서 직접 로그인하고 로그인 상태 유지 선택 | 필수 | 계정당 최초 1회 및 세션 만료 시 |
 | 블로그 소유권 | 로그인 계정이 등록한 블로그의 실제 소유자인지 확인 | 필수 | 프로필 확인 시 |
@@ -76,16 +75,16 @@ macOS 지원은 단순한 사용자 설정이 아니라 다음 코드 이식과 
 
 ## 설치
 
-비공개 저장소 접근 권한이 있는 GitHub 계정으로 저장소를 복제합니다.
+GitHub에서 저장소를 복제합니다. 비공개로 배포하는 경우에는 접근 권한이 있는 계정이 필요합니다.
 
-```powershell
+```shell
 git clone https://github.com/we-insub/codex_blog_write.git
 cd codex_blog_write
 ```
 
 저장소를 Codex 로컬 마켓플레이스로 등록하고 플러그인을 설치합니다.
 
-```powershell
+```shell
 codex plugin marketplace add "$PWD"
 codex plugin add mato-blog-codex@personal
 ```
@@ -103,9 +102,9 @@ Codex가 `~/.googleblog/mato-blog-codex/.venv`에 이 플러그인 전용 Python
 `프로필 1`, `프로필 2`는 각각 서로 다른 Chrome 사용자 데이터 폴더입니다.
 
 ```text
-프로필 1 → ~/.googleblog/browser_profiles/naver_1
-프로필 2 → ~/.googleblog/browser_profiles/naver_2
-프로필 N → ~/.googleblog/browser_profiles/naver_N
+프로필 1 → ~/.googleblog/mato-blog-codex/browser_profiles/naver_1
+프로필 2 → ~/.googleblog/mato-blog-codex/browser_profiles/naver_2
+프로필 N → ~/.googleblog/mato-blog-codex/browser_profiles/naver_N
 ```
 
 프로필마다 다음 정보가 분리됩니다.
@@ -139,7 +138,7 @@ Codex의 공개 검색용 `@Browser`와 네이버 업로드용 `naver_N` Chrome�
 | --- | --- |
 | 블로그 URL | `https://blog.naver.com/intp_kr` |
 | 글쓰기 URL | `https://blog.naver.com/intp_kr?Redirect=Write&` |
-| Chrome 폴더 | `~/.googleblog/browser_profiles/naver_1` |
+| Chrome 폴더 | `~/.googleblog/mato-blog-codex/browser_profiles/naver_1` |
 
 글쓰기 URL은 블로그 URL 또는 ID에서 자동 생성됩니다. 사용자가 `Redirect=Write` 주소를 따로 계산하거나 입력할 필요는 없습니다.
 
@@ -169,7 +168,7 @@ Codex의 공개 검색용 `@Browser`와 네이버 업로드용 `naver_N` Chrome�
 이미 이 PC에 `naver_1`, `naver_2` 같은 영구 프로필이 있다면 새로 만들지 않고 발견할 수 있습니다.
 
 ```text
-기존 네이버 프로필을 찾아서 번호, 별칭, 블로그 URL, 로그인 상태를 보여줘.
+이 프로그램에서 전에 만든 네이버 프로필을 찾아서 번호, 별칭, 블로그 URL, 마지막 로그인 확인 상태를 보여줘.
 ```
 
 발견은 브라우저 폴더를 복사하거나 쿠키를 읽어 출력하지 않습니다. 기존 폴더와 같은 번호를 프로필 목록에 연결할 뿐입니다. 다른 PC로 옮긴 프로필이나 일반 Chrome 프로필은 자동으로 공유되지 않습니다.
@@ -426,18 +425,18 @@ Codex의 `@Browser`가 선택한 검색 영역에 실제로 노출된 네이버 
 
 | 데이터 | 기본 위치 | Git 포함 여부 |
 | --- | --- | --- |
-| Chrome 프로필 | `~/.googleblog/browser_profiles/naver_N` | 제외 |
-| 프로필 목록 | `~/.googleblog/local_agent/naver_profiles.json` | 제외 |
+| Chrome 프로필 | `~/.googleblog/mato-blog-codex/browser_profiles/naver_N` | 제외 |
+| 프로필 목록 | `~/.googleblog/mato-blog-codex/naver_profiles.json` | 제외 |
 | 공통 생성 프롬프트 | `~/.googleblog/mato-blog-codex/prompts/공통.txt` | 제외 |
 | PC 전체 히스토리 | `~/.googleblog/mato-blog-codex/HISTORY.md` | 제외 |
 | 실행별 원고·자료 | `바탕화면/YYYY-MM-DD/<실행-ID>/` | 저장소 밖 |
 | 플러그인 코드·문서 | 이 저장소 | 포함 |
 
-다른 PC에서는 저장소를 다시 설치하고 프로필을 다시 등록·로그인해야 합니다. `browser_profiles` 폴더, `naver_profiles.json`, 쿠키 또는 세션 파일을 GitHub에 올리지 마십시오.
+다른 PC에서는 저장소를 다시 설치하고 프로필을 다시 등록·로그인해야 합니다. Codex 전용 `browser_profiles` 폴더, `naver_profiles.json`, 쿠키 또는 세션 파일을 GitHub에 올리지 마십시오.
 
 ## 모바일 Remote 사용
 
-모바일 Remote는 휴대폰에서 명령만 보내고 실제 Browser, Chrome 프로필과 파일은 연결된 호스트 PC에서 사용합니다. 호스트 PC는 켜져 있고 온라인이어야 하며 Codex 데스크톱 앱이 실행 중이어야 합니다. Computer Use가 필요한 동안 Windows 세션을 잠그지 말고, 업로드 중인 프로필 Chrome 창도 닫지 마십시오.
+모바일 Remote는 휴대폰에서 명령만 보내고 실제 Browser, Chrome 프로필과 파일은 연결된 Windows 또는 macOS 호스트에서 사용합니다. 호스트는 켜져 있고 온라인이어야 하며 Codex 데스크톱 앱이 실행 중이어야 합니다. Computer Use가 필요한 동안 화면을 잠그지 말고, 업로드 중인 프로필 Chrome 창도 닫지 마십시오.
 
 자세한 설정은 [모바일 Remote 사용 안내](docs/MOBILE_REMOTE.md)를 확인하십시오.
 

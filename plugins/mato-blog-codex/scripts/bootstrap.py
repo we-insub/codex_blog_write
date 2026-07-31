@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import venv
@@ -14,6 +15,13 @@ from typing import Sequence
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENTS = PLUGIN_ROOT / "requirements.txt"
+MINIMUM_PYTHON = (3, 10)
+
+
+def is_windows() -> bool:
+    """Return whether the current host uses Windows runtime layout."""
+
+    return os.name == "nt"
 
 
 def runtime_root() -> Path:
@@ -25,9 +33,71 @@ def runtime_root() -> Path:
 
 def runtime_python() -> Path:
     root = runtime_root() / ".venv"
-    if os.name == "nt":
+    if is_windows():
         return root / "Scripts" / "python.exe"
     return root / "bin" / "python"
+
+
+def bootstrap_python_candidates() -> list[list[str]]:
+    """Return possible supported interpreters for relaunching this script."""
+
+    candidates: list[list[str]] = []
+    existing_runtime = runtime_python()
+    if existing_runtime.is_file():
+        candidates.append([str(existing_runtime)])
+    if is_windows():
+        if shutil.which("py"):
+            candidates.extend([["py", f"-{version}"] for version in ("3.14", "3.13", "3.12", "3.11", "3.10")])
+        for name in ("python", "python3"):
+            executable = shutil.which(name)
+            if executable:
+                candidates.append([executable])
+    else:
+        names = ("python3.14", "python3.13", "python3.12", "python3.11", "python3.10", "python3", "python")
+        search_roots = (Path("/opt/homebrew/bin"), Path("/usr/local/bin"))
+        for name in names:
+            executable = shutil.which(name)
+            if executable:
+                candidates.append([executable])
+        for root in search_roots:
+            for name in names[:5]:
+                executable = root / name
+                if executable.is_file():
+                    candidates.append([str(executable)])
+        if sys.platform == "darwin":
+            for version in ("3.14", "3.13", "3.12", "3.11", "3.10"):
+                executable = Path("/Library/Frameworks/Python.framework/Versions") / version / "bin" / "python3"
+                if executable.is_file():
+                    candidates.append([str(executable)])
+    unique: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for command in candidates:
+        key = tuple(command)
+        if key not in seen:
+            unique.append(command)
+            seen.add(key)
+    return unique
+
+
+def relaunch_with_supported_python(argv: Sequence[str]) -> int:
+    """Relaunch through an installed Python 3.10+ when invoked by an older one."""
+
+    version_probe = "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
+    for command in bootstrap_python_candidates():
+        try:
+            probe = subprocess.run(
+                [*command, "-c", version_probe],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode != 0:
+            continue
+        completed = subprocess.run([*command, str(Path(__file__).resolve()), *argv])
+        return int(completed.returncode)
+    raise RuntimeError("Python 3.10 or newer was not found. Install Python and try again.")
 
 
 def chrome_candidates() -> list[Path]:
@@ -36,7 +106,7 @@ def chrome_candidates() -> list[Path]:
             Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
             Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         ]
-    if os.name != "nt":
+    if not is_windows():
         return [
             Path("/usr/bin/google-chrome"),
             Path("/usr/bin/google-chrome-stable"),
@@ -92,7 +162,7 @@ def status_payload() -> dict[str, object]:
 
 
 def install(*, reinstall: bool = False) -> dict[str, object]:
-    if sys.version_info < (3, 10):
+    if sys.version_info < MINIMUM_PYTHON:
         raise RuntimeError("Python 3.10 or newer is required.")
     if not REQUIREMENTS.is_file():
         raise FileNotFoundError(f"requirements file not found: {REQUIREMENTS}")
@@ -132,7 +202,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    if sys.version_info < MINIMUM_PYTHON:
+        try:
+            return relaunch_with_supported_python(raw_argv)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            print(json.dumps({"ready": False, "error": str(exc)}, ensure_ascii=False, indent=2))
+            return 2
+    args = build_parser().parse_args(raw_argv)
     try:
         payload = status_payload() if args.check else install(reinstall=args.reinstall)
         print(json.dumps(payload, ensure_ascii=False, indent=2))

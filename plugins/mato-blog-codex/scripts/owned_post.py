@@ -98,7 +98,7 @@ def prepare_owned_post_download(
     )
     # The content downloader is bundled with this plugin.  The URL workflow
     # therefore does not require a Mato Helper checkout on the user's PC.
-    result = bridge.run_direct_url_download(None, str(directory))
+    result = bridge.run_direct_url_download(str(directory))
     if not result.get("ok"):
         raise bridge.BridgeError("owned post download did not complete")
     entry = next((item for item in result.get("entries", []) if item.get("ok")), None)

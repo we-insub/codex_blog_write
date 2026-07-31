@@ -1,15 +1,13 @@
-"""Local Naver profile, source-download, and draft workflow helpers.
+"""Bundled Naver source-download helpers.
 
 The source downloader is bundled with this plugin and does not require the
-old Mato Helper checkout.  Profile and editor migration remains isolated from
-the downloader so a content-only run never needs browser credentials.
+old Mato Helper checkout. The public CLI intentionally exposes only the local
+URL downloader; profiles and uploads use this plugin's standalone modules.
 """
 
 from __future__ import annotations
 
 import argparse
-import datetime as dt
-import hashlib
 import importlib
 import json
 import os
@@ -27,272 +25,8 @@ except ImportError:
     import naver_url_download as local_url_download  # type: ignore[no-redef]
 
 
-DEFAULT_MATO_HELPER_ROOT = Path.home() / "Desktop" / "google-blog-auto"
-DEFAULT_PROFILE_ROOT = Path.home() / ".googleblog" / "browser_profiles"
-DEFAULT_MANAGED_PROMPT_ROOT = Path.home() / ".googleblog" / "mato-blog-codex" / "prompts"
-
-
 class BridgeError(RuntimeError):
-    """Raised when the existing Mato Helper functions cannot be used."""
-
-
-def helper_root(value: str = "") -> Path:
-    """Resolve and validate the existing Mato Helper source root."""
-
-    raw = value or os.environ.get("MATO_HELPER_ROOT", "")
-    root = Path(raw).expanduser() if raw else DEFAULT_MATO_HELPER_ROOT
-    root = root.resolve()
-    required = (
-        root / "naver_playwright.py",
-        root / "local_agent" / "local_store.py",
-        root / "local_agent" / "naver_draft.py",
-        root / "local_agent" / "naver_url_download.py",
-    )
-    missing = [path.name for path in required if not path.is_file()]
-    if missing:
-        raise BridgeError(f"Mato Helper 연결 파일을 찾지 못했습니다: {', '.join(missing)}")
-    return root
-
-
-def _add_helper_import_path(root: Path) -> None:
-    root_text = str(root)
-    if root_text not in sys.path:
-        sys.path.insert(0, root_text)
-
-
-def profile_name(slot: int) -> str:
-    if slot <= 0:
-        raise ValueError("프로필 번호는 1 이상이어야 합니다.")
-    return f"naver_{slot}"
-
-
-def profile_check_payload(slot: int, write_url: str, *, interactive_login: bool) -> dict[str, Any]:
-    """Build a compatibility payload for callers that inspect the command."""
-
-    payload: dict[str, Any] = {
-        "profile_name": profile_name(slot),
-        "write_url": str(write_url or "").strip(),
-    }
-    if interactive_login:
-        payload.update({"mode": "create_login", "interactive_login": True, "ensure_profile": True})
-    return payload
-
-
-def draft_payload(
-    slot: int,
-    root_dir: str,
-    write_url: str,
-    *,
-    max_count: int = 1,
-    typing_delay: int = 20,
-    publish: bool = False,
-) -> dict[str, Any]:
-    work_dir = Path(root_dir).expanduser().resolve()
-    if not work_dir.is_dir():
-        raise ValueError(f"원고 작업 폴더를 찾을 수 없습니다: {work_dir}")
-    if not str(write_url or "").strip():
-        raise ValueError("네이버 글쓰기 URL이 필요합니다.")
-    return {
-        "root_dir": str(work_dir),
-        "write_url": str(write_url).strip(),
-        "template_name": "제목을입력해주세요1",
-        "typing_delay": max(0, min(500, int(typing_delay))),
-        "max_count": max(1, min(50, int(max_count))),
-        "profile_name": profile_name(slot),
-        "publish_mode": "publish" if publish else "draft",
-        "is_draft": not publish,
-    }
-
-
-def _load_store(root: Path) -> Any:
-    _add_helper_import_path(root)
-    try:
-        return importlib.import_module("local_agent.local_store")
-    except Exception as exc:
-        raise BridgeError(f"Mato Helper 프로필 저장소를 불러오지 못했습니다: {exc}") from exc
-
-
-def resolve_profile_path(root: Path, slot: int, *, create: bool) -> Path:
-    """Use Mato Helper's registered or legacy persistent profile for a slot.
-
-    Older Mato Helper installations stored the first profile as
-    ``~/.googleblog/naver_browser`` and later slots as ``naver_browser_N``.
-    Adopt those folders before creating the newer ``browser_profiles/naver_N``
-    layout so an existing user session is never replaced by an empty profile.
-    """
-
-    name = profile_name(slot)
-    store = _load_store(root)
-    existing = str(store.get_playwright_profile(name) or "").strip()
-    if existing:
-        path = Path(existing).expanduser()
-    else:
-        legacy_name = "naver_browser" if slot == 1 else f"naver_browser_{slot}"
-        legacy_path = Path.home() / ".googleblog" / legacy_name
-        if legacy_path.is_dir():
-            row = store.ensure_playwright_profile(name, str(legacy_path))
-            path = Path(str(row.get("path") or legacy_path)).expanduser()
-        else:
-            path = DEFAULT_PROFILE_ROOT / name
-    if create:
-        row = store.ensure_playwright_profile(name, str(path))
-        path = Path(str(row.get("path") or path)).expanduser()
-    return path.resolve()
-
-
-def _safe_url(url: str) -> str:
-    value = str(url or "").strip()
-    if not value:
-        return ""
-    if not value.lower().startswith(("https://blog.naver.com/", "http://blog.naver.com/")):
-        raise BridgeError("글쓰기 주소는 blog.naver.com 주소여야 합니다.")
-    return value
-
-
-def _record_profile_status(slot: int, ready: bool) -> None:
-    """Mirror a bridge check into the plugin's credential-free profile catalog."""
-
-    try:
-        profiles_module = importlib.import_module("profiles")
-        profiles_module._update_login_status(slot, "ready" if ready else "needs_login")
-    except Exception:
-        # The existing Mato Helper profile is authoritative. A stale display
-        # status must not turn a successful browser check into a failure.
-        pass
-
-
-def run_direct_profile_check(
-    root: Path,
-    slot: int,
-    write_url: str,
-    *,
-    timeout_seconds: int = 300,
-    status_callback: Callable[[str], None] | None = None,
-) -> dict[str, Any]:
-    """Open the verified Mato Helper profile login/check flow in visible Chrome."""
-
-    profile = resolve_profile_path(root, slot, create=True)
-    target = _safe_url(write_url)
-    _add_helper_import_path(root)
-    try:
-        module = importlib.import_module("naver_playwright")
-        writer_class = module.NaverPlaywright
-    except Exception as exc:
-        raise BridgeError(f"Mato Helper 네이버 브라우저 기능을 불러오지 못했습니다: {exc}") from exc
-
-    def report(message: object, _color: str = "black") -> None:
-        if status_callback:
-            status_callback(str(message))
-
-    writer = writer_class(update_status_func=report, profile_dir=str(profile))
-    ready = False
-    try:
-        ready = bool(
-            writer.login(
-                "",
-                "",
-                target_url=target or None,
-                login_timeout_sec=max(60, min(900, int(timeout_seconds))),
-            )
-        )
-    finally:
-        try:
-            writer.stop()
-        except Exception:
-            pass
-
-    _record_profile_status(slot, ready)
-
-    return {
-        "ok": ready,
-        "kind": "naver_profile_check",
-        "profile_name": profile_name(slot),
-        "profile_path": str(profile),
-        "profile_exists": profile.is_dir(),
-        "write_url": target,
-        "login_ready": ready,
-    }
-
-
-def _safe_draft_result(result: Mapping[str, Any], profile: Path, slot: int) -> dict[str, Any]:
-    """Keep useful writer results while omitting all browser/session data."""
-
-    entries: list[dict[str, Any]] = []
-    raw_entries = result.get("entries")
-    if isinstance(raw_entries, list):
-        for raw in raw_entries[:50]:
-            if not isinstance(raw, Mapping):
-                continue
-            entries.append(
-                {
-                    key: raw.get(key)
-                    for key in ("folder", "title", "write_url", "ok", "skipped", "save_ok", "completed", "reason")
-                    if key in raw
-                }
-            )
-    return {
-        "ok": int(result.get("succeeded") or 0) > 0 and int(result.get("failed") or 0) == 0,
-        "kind": "naver_draft_upload",
-        "profile_name": profile_name(slot),
-        "profile_path": str(profile),
-        "mode": result.get("mode"),
-        "processed": result.get("processed"),
-        "succeeded": result.get("succeeded"),
-        "failed": result.get("failed"),
-        "skipped": result.get("skipped"),
-        "elapsed_sec": result.get("elapsed_sec"),
-        "entries": entries,
-    }
-
-
-def run_direct_draft(
-    root: Path,
-    slot: int,
-    root_dir: str,
-    write_url: str,
-    *,
-    max_count: int = 1,
-    typing_delay: int = 20,
-    publish: bool = False,
-    status_callback: Callable[[str], None] | None = None,
-) -> dict[str, Any]:
-    """Run Mato Helper's existing Naver draft writer with its numbered profile."""
-
-    payload = draft_payload(
-        slot,
-        root_dir,
-        _safe_url(write_url),
-        max_count=max_count,
-        typing_delay=typing_delay,
-        publish=publish,
-    )
-    profile = resolve_profile_path(root, slot, create=False)
-    if not profile.is_dir():
-        raise BridgeError(f"{profile_name(slot)} 프로필이 없습니다. 먼저 profile-check를 실행하세요.")
-    _add_helper_import_path(root)
-    try:
-        module = importlib.import_module("local_agent.naver_draft")
-    except Exception as exc:
-        raise BridgeError(f"Mato Helper 네이버 글쓰기 기능을 불러오지 못했습니다: {exc}") from exc
-
-    def report(_progress: int, message: str) -> None:
-        if status_callback:
-            status_callback(str(message))
-
-    result = module.run_naver_draft_upload(
-        profile_path=str(profile),
-        root_dir=payload["root_dir"],
-        write_url=payload["write_url"],
-        template_name=payload["template_name"],
-        typing_delay=payload["typing_delay"],
-        max_count=payload["max_count"],
-        publish_mode=bool(publish),
-        headless=False,
-        status_callback=report,
-    )
-    if not isinstance(result, Mapping):
-        raise BridgeError("Mato Helper 글쓰기 결과 형식이 올바르지 않습니다.")
-    return _safe_draft_result(result, profile, slot)
+    """Raised when the bundled Naver source downloader cannot complete."""
 
 
 def _safe_local_title(value: object, fallback: str) -> str:
@@ -303,7 +37,7 @@ def _safe_local_title(value: object, fallback: str) -> str:
 def _naver_postview_url(url: str) -> str:
     """Resolve a public Naver post URL to the document served inside mainFrame.
 
-    Mato Helper's downloader intentionally stays request-based.  Naver's short
+    The bundled downloader intentionally stays request-based. Naver's short
     ``/{blogId}/{logNo}`` form now returns only an iframe shell, so handing the
     equivalent public PostView URL to the existing function preserves the
     verified downloader while allowing it to see the article and images.
@@ -325,7 +59,7 @@ def _naver_postview_url(url: str) -> str:
 
 
 def _normalize_downloaded_images(folder: Path) -> tuple[list[str], dict[str, str]]:
-    """Normalize Mato Helper downloads to real ``image_N.jpg`` files."""
+    """Normalize bundled downloads to real ``image_N.jpg`` files."""
 
     try:
         from PIL import Image
@@ -742,7 +476,6 @@ def _write_structured_original_hamchuk(
 
 
 def run_direct_url_download(
-    root: Path | None,
     run_dir: str,
     *,
     max_images_per_page: int = 0,
@@ -753,9 +486,8 @@ def run_direct_url_download(
 ) -> dict[str, Any]:
     """Download with the bundled module, then keep adequate original images.
 
-    ``root`` is retained temporarily for call compatibility with earlier
-    runs.  It is deliberately unused: downloading no longer imports from or
-    reads the Mato Helper checkout.
+    Downloading imports only the modules bundled with this plugin and never
+    reads an external Mato Helper checkout.
     """
 
     min_image_width = max(1, min(10000, int(min_image_width)))
@@ -815,7 +547,7 @@ def run_direct_url_download(
             status_callback=report,
         )
     if not isinstance(result, Mapping):
-        raise BridgeError("Mato Helper 이미지 다운로드 결과 형식이 올바르지 않습니다.")
+        raise BridgeError("내장 이미지 다운로드 결과 형식이 올바르지 않습니다.")
 
     safe_entries: list[dict[str, Any]] = []
     for raw in result.get("entries", []):
@@ -927,154 +659,9 @@ def run_direct_url_download(
     return summary
 
 
-def _helper_generation_prompt(root: Path, prompt_key: str) -> tuple[str, str]:
-    """Load one Naver prompt through Mato Helper's own prompt loader."""
-    _add_helper_import_path(root)
-    try:
-        module = importlib.import_module("local_agent.html_card")
-        prompts = module.load_naver_prompts(root)
-    except Exception as exc:
-        raise BridgeError(f"Mato Helper 프롬프트를 불러오지 못했습니다: {exc}") from exc
-    key = str(prompt_key or "공통").strip() or "공통"
-    body = str(prompts.get(key) or "").strip()
-    if not body:
-        raise BridgeError(f"Mato Helper 프롬프트가 비어 있습니다: {key}")
-    return key, body
-
-
-def managed_prompt_path(prompt_key: str) -> Path:
-    """Return the per-PC editable prompt file without allowing path traversal."""
-
-    key = str(prompt_key or "공통").strip() or "공통"
-    safe_key = re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", key).strip("._") or "공통"
-    return (DEFAULT_MANAGED_PROMPT_ROOT / f"{safe_key}.txt").resolve()
-
-
-def init_managed_prompt(root: Path, prompt_key: str, *, overwrite: bool = False) -> dict[str, Any]:
-    """Create or explicitly refresh a locally editable prompt from Mato Helper."""
-
-    key, helper_body = _helper_generation_prompt(root, prompt_key)
-    destination = managed_prompt_path(key)
-    existed = destination.is_file()
-    if overwrite or not existed:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(helper_body.rstrip() + "\n", encoding="utf-8", newline="\n")
-    body = destination.read_text(encoding="utf-8-sig")
-    return {
-        "ok": True,
-        "kind": "naver_managed_prompt",
-        "prompt_key": key,
-        "path": str(destination),
-        "created": not existed,
-        "overwritten": bool(overwrite and existed),
-        "source": str((root / "1_프로그램" / "app.py").resolve()),
-        "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
-        "character_count": len(body),
-    }
-
-
-def prompt_status(root: Path, prompt_key: str) -> dict[str, Any]:
-    """Report the managed file and whether it differs from Mato Helper."""
-
-    key, helper_body = _helper_generation_prompt(root, prompt_key)
-    path = managed_prompt_path(key)
-    local_body = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
-    helper_text = helper_body.rstrip() + "\n"
-    return {
-        "ok": True,
-        "kind": "naver_managed_prompt_status",
-        "prompt_key": key,
-        "path": str(path),
-        "exists": path.is_file(),
-        "modified_from_helper": bool(path.is_file() and local_body != helper_text),
-        "local_sha256": hashlib.sha256(local_body.encode("utf-8")).hexdigest() if path.is_file() else "",
-        "helper_sha256": hashlib.sha256(helper_text.encode("utf-8")).hexdigest(),
-    }
-
-
-def export_generation_prompt(root: Path, prompt_key: str, output_path: str) -> dict[str, Any]:
-    """Export the editable managed prompt plus Mato Helper's live date context."""
-
-    managed = init_managed_prompt(root, prompt_key, overwrite=False)
-    key = str(managed["prompt_key"])
-    managed_path = Path(str(managed["path"]))
-    body = managed_path.read_text(encoding="utf-8-sig").strip()
-    today = dt.date.today()
-    date_start = today - dt.timedelta(days=30)
-    date_end = today - dt.timedelta(days=1)
-    weekday = "월화수목금토일"[today.weekday()]
-    date_context = (
-        "# ⏰ 현재 시점 정보 (필수 참고 — 학습 데이터 시점 X, 실제 오늘 기준)\n"
-        f"오늘 날짜: {today:%Y-%m-%d} ({weekday}요일)\n"
-        f"방문일자 자동 생성 시 사용할 범위: {date_start:%Y-%m-%d} ~ {date_end:%Y-%m-%d} 사이 임의 날짜\n"
-        f"※ 위 범위 밖의 날짜 (특히 {today.year - 1}년 이전) 절대 사용 금지\n"
-        "※ 본문 도입부에 'YYYY.MM.DD 방문 기준' 형식으로 명시\n\n"
-    )
-    effective = date_context + body.rstrip() + "\n"
-    destination = Path(output_path).expanduser().resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(effective, encoding="utf-8", newline="\n")
-    return {
-        "ok": True,
-        "kind": "naver_generation_prompt",
-        "prompt_key": key,
-        "source": str((root / "1_프로그램" / "app.py").resolve()),
-        "managed_prompt": str(managed_path),
-        "output": str(destination),
-        "sha256": hashlib.sha256(effective.encode("utf-8")).hexdigest(),
-        "character_count": len(effective),
-    }
-
-
-def doctor(root: Path) -> dict[str, Any]:
-    """Check source functions and discover existing naver_N folders."""
-
-    store = _load_store(root)
-    profiles: dict[str, dict[str, Any]] = {}
-    try:
-        for item in store.list_playwright_profiles():
-            name = str(item.get("name") or "")
-            if name.startswith("naver_"):
-                path = Path(str(item.get("path") or DEFAULT_PROFILE_ROOT / name)).expanduser()
-                profiles[name] = {"name": name, "path": str(path), "exists": path.is_dir()}
-    except Exception as exc:
-        raise BridgeError(f"Mato Helper 프로필 목록을 확인하지 못했습니다: {exc}") from exc
-    if DEFAULT_PROFILE_ROOT.is_dir():
-        for path in DEFAULT_PROFILE_ROOT.glob("naver_*"):
-            if path.is_dir():
-                profiles.setdefault(path.name, {"name": path.name, "path": str(path), "exists": True})
-    return {
-        "ok": True,
-        "helper_root": str(root),
-        "transport": "direct-local",
-        "profile_check_available": True,
-        "draft_writer_available": True,
-        "url_image_downloader_available": True,
-        "naver_profiles": [profiles[name] for name in sorted(profiles)],
-    }
-
-
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run local Naver profile, draft, and source-download workflows.")
-    parser.add_argument("--helper-root", default="", help="Existing google-blog-auto source root.")
+    parser = argparse.ArgumentParser(description="Run the bundled Naver source downloader.")
     commands = parser.add_subparsers(dest="command", required=True)
-
-    commands.add_parser("doctor", help="Check Mato Helper functions and numbered Naver profiles.")
-
-    check = commands.add_parser("profile-check", help="Open/check a numbered Mato Helper Naver profile.")
-    check.add_argument("--slot", type=int, required=True)
-    check.add_argument("--write-url", default="")
-    check.add_argument("--interactive-login", action="store_true", help="Compatibility flag; Chrome is always visible.")
-    check.add_argument("--timeout", type=int, default=300)
-
-    draft = commands.add_parser("draft", help="Upload local Mato posts through the existing Mato Helper writer.")
-    draft.add_argument("--slot", type=int, required=True)
-    draft.add_argument("--root-dir", required=True)
-    draft.add_argument("--write-url", required=True)
-    draft.add_argument("--max-count", type=int, default=1)
-    draft.add_argument("--typing-delay", type=int, default=20)
-    draft.add_argument("--publish", action="store_true")
-    draft.add_argument("--confirm-publish", default="")
 
     download = commands.add_parser("url-download", help="Download source text and images with the bundled downloader.")
     download.add_argument("--run-dir", required=True)
@@ -1087,67 +674,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Keep downloaded metadata instead of applying the default privacy cleanup.",
     )
 
-    prompt = commands.add_parser("prompt-export", help="Export Mato Helper's effective Naver prompt.")
-    prompt.add_argument("--prompt-key", default="공통")
-    prompt.add_argument("--output", required=True)
-
-    prompt_init = commands.add_parser("prompt-init", help="Create the editable per-PC Naver prompt file.")
-    prompt_init.add_argument("--prompt-key", default="공통")
-
-    prompt_status_cmd = commands.add_parser("prompt-status", help="Show editable prompt path and hashes.")
-    prompt_status_cmd.add_argument("--prompt-key", default="공통")
-
-    prompt_sync = commands.add_parser("prompt-sync", help="Replace the editable prompt with Mato Helper's current prompt.")
-    prompt_sync.add_argument("--prompt-key", default="공통")
-    prompt_sync.add_argument("--confirm-overwrite", default="")
-
     args = parser.parse_args(argv)
     try:
-        if args.command == "url-download":
-            result = run_direct_url_download(
-                None,
-                args.run_dir,
-                max_images_per_page=args.max_images_per_page,
-                min_image_width=args.min_image_width,
-                min_image_height=args.min_image_height,
-                sanitize_images=not args.skip_image_sanitize,
-                status_callback=lambda message: print(message, file=sys.stderr, flush=True),
-            )
-        else:
-            root = helper_root(args.helper_root)
-            if args.command == "doctor":
-                result = doctor(root)
-            elif args.command == "profile-check":
-                result = run_direct_profile_check(
-                    root,
-                    args.slot,
-                    args.write_url,
-                    timeout_seconds=args.timeout,
-                    status_callback=lambda message: print(message, file=sys.stderr, flush=True),
-                )
-            elif args.command == "draft":
-                if args.publish and args.confirm_publish != "PUBLISH":
-                    raise BridgeError("공개 발행은 --confirm-publish PUBLISH 확인이 필요합니다.")
-                result = run_direct_draft(
-                    root,
-                    args.slot,
-                    args.root_dir,
-                    args.write_url,
-                    max_count=args.max_count,
-                    typing_delay=args.typing_delay,
-                    publish=args.publish,
-                    status_callback=lambda message: print(message, file=sys.stderr, flush=True),
-                )
-            elif args.command == "prompt-export":
-                result = export_generation_prompt(root, args.prompt_key, args.output)
-            elif args.command == "prompt-init":
-                result = init_managed_prompt(root, args.prompt_key, overwrite=False)
-            elif args.command == "prompt-status":
-                result = prompt_status(root, args.prompt_key)
-            else:
-                if args.confirm_overwrite != "SYNC":
-                    raise BridgeError("프롬프트 덮어쓰기는 --confirm-overwrite SYNC 확인이 필요합니다.")
-                result = init_managed_prompt(root, args.prompt_key, overwrite=True)
+        result = run_direct_url_download(
+            args.run_dir,
+            max_images_per_page=args.max_images_per_page,
+            min_image_width=args.min_image_width,
+            min_image_height=args.min_image_height,
+            sanitize_images=not args.skip_image_sanitize,
+            status_callback=lambda message: print(message, file=sys.stderr, flush=True),
+        )
     except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
