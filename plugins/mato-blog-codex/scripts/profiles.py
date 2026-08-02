@@ -610,6 +610,59 @@ def _remaining_navigation_timeout_ms(deadline: float) -> int:
     return min(60_000, max(3_000, remaining_ms))
 
 
+def _verify_login_after_clean_reopen(
+    playwright: Any,
+    *,
+    user_data_dir: Path,
+    start_url: str,
+    write_url: str | None,
+) -> str:
+    """Reopen an owned profile once before reporting a durable login.
+
+    A visible page can look authenticated while Chrome still has the session
+    only in memory. Closing that one dedicated Chrome context normally flushes
+    the profile database; reopening it verifies the next use of the same
+    numbered profile can still reach Naver without a login screen. No cookies
+    or credentials are read, copied, or saved by this check.
+    """
+
+    context = None
+    try:
+        context = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(user_data_dir),
+            channel="chrome",
+            headless=False,
+            locale="ko-KR",
+            timezone_id="Asia/Seoul",
+            viewport={"width": 1280, "height": 1024},
+        )
+        page = context.pages[0] if context.pages else context.new_page()
+        page.goto(start_url, wait_until="domcontentloaded", timeout=60_000)
+        page.wait_for_timeout(6_500 if start_url == NAVER_HOME_URL else 1_500)
+        if _is_access_restricted(page):
+            return "error"
+        if is_naver_login_required(page, context):
+            return "needs_login"
+        if not write_url:
+            return "logged_in"
+
+        page.goto(write_url, wait_until="domcontentloaded", timeout=60_000)
+        page.wait_for_timeout(6_500)
+        if _is_access_restricted(page):
+            return "error"
+        if is_naver_login_required(page, context):
+            return "needs_login"
+        return "ready" if _is_editor_ready(page) else "error"
+    except Exception:
+        return "error"
+    finally:
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+
+
 def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -> str:
     """Open visible Chrome, preserve its login, and confirm editor access."""
 
@@ -661,6 +714,24 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
                 )
             except Exception as exc:
                 raise RuntimeError(f"설치된 Chrome을 열지 못했습니다: {exc}") from exc
+
+        def _durable_result() -> str:
+            """Verify a newly checked owned profile after a graceful close."""
+
+            nonlocal owns_context
+            if not owns_context:
+                # A connector-owned profile remains open in Chrome, so this
+                # task must not close the user's visible profile to probe it.
+                return "logged_in" if login_only else "ready"
+            context.close()
+            owns_context = False
+            return _verify_login_after_clean_reopen(
+                playwright,
+                user_data_dir=user_data_dir,
+                start_url=start_url,
+                write_url=write_url,
+            )
+
         try:
             page = context.pages[0] if context.pages else context.new_page()
             _go_within_deadline(page, start_url)
@@ -700,9 +771,9 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
                             continue
                     if persistent_login_ready(context, page):
                         if login_only:
-                            return "logged_in"
+                            return _durable_result()
                         if _is_editor_ready(page):
-                            return "ready"
+                            return _durable_result()
                 try:
                     page.wait_for_timeout(1_000)
                 except Exception:
@@ -710,7 +781,7 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
             if is_naver_login_required(page, context):
                 return "needs_login"
             if login_only and persistent_login_ready(context, page):
-                return "logged_in"
+                return _durable_result()
             return "error"
         finally:
             if owns_context:

@@ -18,8 +18,6 @@ NAVER_ORIGINS = (
     "https://blog.naver.com",
 )
 AUTH_COOKIE_NAMES = ("NID_AUT", "NID_SES")
-PERSIST_SECONDS = 90 * 24 * 60 * 60
-RENEW_BEFORE_SECONDS = 30 * 24 * 60 * 60
 
 
 def _auth_cookie_state(context: Any) -> tuple[bool, bool, dict[str, Mapping[str, Any]]]:
@@ -171,65 +169,13 @@ def ensure_keep_login_checked(page: Any) -> bool:
         return False
 
 
-def _promote_auth_cookies(context: Any, page: Any, auth: Mapping[str, Mapping[str, Any]]) -> bool:
-    """Make session cookies reusable in the same persistent profile only."""
-
-    if context is None or not auth:
-        return False
-    now = time.time()
-    promoted: list[dict[str, Any]] = []
-    for name in AUTH_COOKIE_NAMES:
-        cookie = auth.get(name)
-        if not cookie:
-            return False
-        raw_expires = cookie.get("expires", -1)
-        if raw_expires is None or raw_expires == "":
-            raw_expires = -1
-        try:
-            expires = float(raw_expires)
-        except (TypeError, ValueError):
-            return False
-        if expires >= 0 and expires <= now:
-            return False
-        if expires < 0 or expires <= now + RENEW_BEFORE_SECONDS:
-            expires = now + PERSIST_SECONDS
-        item: dict[str, Any] = {
-            "name": name,
-            "value": str(cookie.get("value") or ""),
-            "domain": str(cookie.get("domain") or ".naver.com"),
-            "path": str(cookie.get("path") or "/"),
-            "expires": expires,
-            "httpOnly": bool(cookie.get("httpOnly", True)),
-            "secure": bool(cookie.get("secure", True)),
-        }
-        same_site = cookie.get("sameSite")
-        if same_site in ("Strict", "Lax", "None"):
-            item["sameSite"] = same_site
-        promoted.append(item)
-    try:
-        context.add_cookies(promoted)
-        if page is not None:
-            page.wait_for_timeout(1_000)
-    except Exception:
-        return False
-    _has_required, persistent, _auth = _auth_cookie_state(context)
-    return bool(persistent)
-
-
 def persistent_login_ready(context: Any, page: Any) -> bool:
-    """Ensure Naver auth survives a clean close of this persistent profile."""
+    """Return a valid Naver session without rewriting authentication values.
 
-    has_required, persistent, auth = _auth_cookie_state(context)
-    if not has_required:
-        return False
-    if persistent:
-        now = time.time()
-        try:
-            if all(
-                float(auth[name].get("expires") or -1) > now + RENEW_BEFORE_SECONDS
-                for name in AUTH_COOKIE_NAMES
-            ):
-                return True
-        except (KeyError, TypeError, ValueError):
-            pass
-    return _promote_auth_cookies(context, page, auth)
+    Naver may retain an authenticated session in the browser profile even when
+    the individual cookie reports a session expiry. Persistence is therefore
+    verified by the clean-close-and-reopen check in ``profiles.py``, not by
+    altering the cookie's expiry or assuming one from its metadata.
+    """
+
+    return has_naver_login(context)
