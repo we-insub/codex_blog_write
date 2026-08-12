@@ -246,6 +246,27 @@ class ProfileCatalogTests(unittest.TestCase):
         self.assertTrue(all(row["connector_ready"] for row in result))
         self.assertEqual(connector.call_count, 2)
 
+    def test_opened_profile_prepares_normal_keep_login_without_touching_existing_window(self) -> None:
+        profiles.add_profile(1, alias="계정1", blog_url="owner1")
+        profiles.add_profile(2, alias="계정2", blog_url="owner2")
+        with patch.object(
+            profiles,
+            "open_profile_browser",
+            side_effect=[
+                {"slot": 1, "status": "opened", "connector_ready": True},
+                {"slot": 2, "status": "already_open", "connector_ready": True},
+            ],
+        ), patch.object(
+            profiles,
+            "_prepare_open_profile_login",
+            return_value=True,
+        ) as prepare:
+            result = profiles.open_profiles("1,2")
+
+        prepare.assert_called_once()
+        self.assertTrue(result[0]["keep_login_prepared"])
+        self.assertNotIn("keep_login_prepared", result[1])
+
     def test_voice_metadata_is_saved_without_browser_and_redacts_secrets(self) -> None:
         profiles.add_profile(1, alias="계정", blog_url="owner1")
         with patch.object(

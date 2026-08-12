@@ -788,6 +788,41 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
                 context.close()
 
 
+def _prepare_open_profile_login(profile: Mapping[str, Any]) -> bool:
+    """Arm Naver's normal keep-login control in a newly opened profile window.
+
+    ``open`` is the common first-use entry point: it opens the configured
+    writing URL and lets the user sign in directly in Chrome.  Previously that
+    route did not run the same keep-login preparation as ``check --login``.
+    When Naver redirects the new window to its visible login screen, connect
+    briefly to that exact Codex-owned profile and select only Naver's ordinary
+    keep-login option.  The browser remains open and owns all cookie writes.
+    """
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return False
+
+    user_data_dir = Path(str(profile["profile_path"]))
+    try:
+        with sync_playwright() as playwright:
+            attached = connect_profile_context(playwright, user_data_dir)
+            if attached is None:
+                return False
+            _browser, context = attached
+            page = context.pages[0] if context.pages else context.new_page()
+            page.wait_for_timeout(1_500)
+            if not is_naver_login_required(page, context):
+                return False
+            return ensure_keep_login_checked(page)
+    except Exception:
+        # Opening a visible profile must still succeed if the login page is
+        # slow or Naver changes the control markup. The later login check will
+        # report that no reusable session was established.
+        return False
+
+
 def open_profiles(profile_slots: str | Iterable[int | str]) -> list[dict[str, Any]]:
     """Open numbered profile Chrome windows and leave them available for reuse."""
 
@@ -798,7 +833,10 @@ def open_profiles(profile_slots: str | Iterable[int | str]) -> list[dict[str, An
         profile_path = Path(str(profile["profile_path"]))
         if not _is_safe_profile_directory(profile_path):
             raise ValueError(f"프로필 폴더가 없습니다: {profile_path}")
-        results.append(open_profile_browser(profile))
+        opened = open_profile_browser(profile)
+        if opened.get("status") == "opened":
+            opened["keep_login_prepared"] = _prepare_open_profile_login(profile)
+        results.append(opened)
     return results
 
 

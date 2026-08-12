@@ -170,12 +170,18 @@ def ensure_keep_login_checked(page: Any) -> bool:
 
 
 def persistent_login_ready(context: Any, page: Any) -> bool:
-    """Return a valid Naver session without rewriting authentication values.
+    """Return only a session that Naver itself stored beyond this Chrome run.
 
-    Naver may retain an authenticated session in the browser profile even when
-    the individual cookie reports a session expiry. Persistence is therefore
-    verified by the clean-close-and-reopen check in ``profiles.py``, not by
-    altering the cookie's expiry or assuming one from its metadata.
+    A visible authenticated page can still be backed by session-only cookies.
+    Treating that as a ready profile meant a user could close the dedicated
+    window and unexpectedly have to log in again next time. A Mato profile is
+    ready only when both Naver authentication cookies have a future expiry
+    chosen by Naver after its normal *keep me logged in* flow.
+
+    This function never copies cookies, changes expiry dates, or otherwise
+    attempts to extend Naver's server-controlled session.
     """
 
-    return has_naver_login(context)
+    if is_naver_login_required(page, context):
+        return False
+    return has_naver_login(context, require_persistent=True)
