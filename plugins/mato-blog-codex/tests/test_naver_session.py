@@ -96,14 +96,14 @@ def auth_cookies(expires: float) -> list[dict[str, object]]:
 
 
 class NaverSessionTests(unittest.TestCase):
-    def test_session_only_cookies_are_not_marked_as_reusable(self) -> None:
+    def test_session_only_cookies_are_promoted_in_the_same_profile(self) -> None:
         context = FakeContext(auth_cookies(-1))
         page = FakePage()
 
-        self.assertFalse(naver_session.persistent_login_ready(context, page))
+        self.assertTrue(naver_session.persistent_login_ready(context, page))
 
-        self.assertEqual(context.added, [])
-        self.assertEqual(page.waits, [])
+        self.assertEqual({item["name"] for item in context.added}, set(naver_session.AUTH_COOKIE_NAMES))
+        self.assertEqual(page.waits, [1_000])
 
     def test_long_lived_persistent_cookies_are_not_rewritten(self) -> None:
         context = FakeContext(auth_cookies(time.time() + 180 * 24 * 60 * 60))

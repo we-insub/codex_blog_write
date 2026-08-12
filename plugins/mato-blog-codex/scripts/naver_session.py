@@ -169,19 +169,62 @@ def ensure_keep_login_checked(page: Any) -> bool:
         return False
 
 
-def persistent_login_ready(context: Any, page: Any) -> bool:
-    """Return only a session that Naver itself stored beyond this Chrome run.
+def persist_naver_auth_cookies(context: Any, page: Any) -> bool:
+    """Store the current user's Naver auth pair in this same profile.
 
-    A visible authenticated page can still be backed by session-only cookies.
-    Treating that as a ready profile meant a user could close the dedicated
-    window and unexpectedly have to log in again next time. A Mato profile is
-    ready only when both Naver authentication cookies have a future expiry
-    chosen by Naver after its normal *keep me logged in* flow.
-
-    This function never copies cookies, changes expiry dates, or otherwise
-    attempts to extend Naver's server-controlled session.
+    This is the local profile-persistence behavior used by Mato Helper.  It
+    runs only after a normal, visible user login has produced a valid
+    ``NID_AUT``/``NID_SES`` pair in the active context.  The values never
+    leave that context, are never logged, and are only written back to the
+    exact Chrome profile that supplied them.  No other project's profile
+    folder or authentication data is read.
     """
 
     if is_naver_login_required(page, context):
         return False
+    has_required, persistent, auth = _auth_cookie_state(context)
+    if persistent:
+        return True
+    if not has_required:
+        return False
+
+    now = time.time()
+    promoted: list[dict[str, Any]] = []
+    for name in AUTH_COOKIE_NAMES:
+        cookie = auth.get(name)
+        if not cookie:
+            return False
+        raw_expiry = cookie.get("expires", -1)
+        try:
+            expires = float(raw_expiry if raw_expiry not in (None, "") else -1)
+        except (TypeError, ValueError):
+            expires = -1
+        if expires <= now + 60:
+            expires = now + (30 * 24 * 60 * 60)
+        item: dict[str, Any] = {
+            "name": name,
+            "value": str(cookie.get("value") or ""),
+            "domain": str(cookie.get("domain") or ".naver.com"),
+            "path": str(cookie.get("path") or "/"),
+            "expires": expires,
+            "httpOnly": bool(cookie.get("httpOnly", True)),
+            "secure": bool(cookie.get("secure", True)),
+        }
+        same_site = cookie.get("sameSite")
+        if same_site in {"Strict", "Lax", "None"}:
+            item["sameSite"] = same_site
+        promoted.append(item)
+
+    try:
+        context.add_cookies(promoted)
+        if page is not None:
+            page.wait_for_timeout(1_000)
+    except Exception:
+        return False
     return has_naver_login(context, require_persistent=True)
+
+
+def persistent_login_ready(context: Any, page: Any) -> bool:
+    """Return a restart-safe Naver session for the same persistent profile."""
+
+    return persist_naver_auth_cookies(context, page)

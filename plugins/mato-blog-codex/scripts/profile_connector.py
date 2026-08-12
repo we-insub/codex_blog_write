@@ -205,7 +205,6 @@ def open_profile_browser(
             "해당 전용 창만 닫은 뒤 다시 열어주세요."
         )
 
-    chrome = find_chrome_executable()
     target_url = str(profile.get("write_url") or profile.get("blog_url") or "https://www.naver.com")
     windows = is_windows()
     creationflags = 0
@@ -215,13 +214,11 @@ def open_profile_browser(
         )
     process = subprocess.Popen(
         [
-            str(chrome),
-            f"--user-data-dir={profile_path}",
-            "--remote-debugging-address=127.0.0.1",
-            "--remote-debugging-port=0",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--new-window",
+            sys.executable,
+            str(Path(__file__).with_name("profile_host.py")),
+            "--profile-path",
+            str(profile_path),
+            "--target-url",
             target_url,
         ],
         stdin=subprocess.DEVNULL,
