@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Sequence
 
 from naver_session import ensure_keep_login_checked, is_naver_login_required, persistent_login_ready
+from profile_runtime import clear_profile_state, write_profile_state
 
 
 def _user_agent() -> str:
@@ -92,6 +93,7 @@ def _run_context(
             viewport={"width": 1280, "height": 1024},
         )
         try:
+            write_profile_state(profile, status="starting")
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
             while not stop_requested():
@@ -105,14 +107,19 @@ def _run_context(
                     # Playwright process attaching to (and potentially
                     # disconnecting) the visible browser.
                     ensure_keep_login_checked(page)
+                    write_profile_state(profile, status="needs_login")
                 else:
                     # Same-profile persistence only; the helper function never
                     # exposes authentication values outside this context.
-                    persistent_login_ready(context, page)
+                    if persistent_login_ready(context, page):
+                        write_profile_state(profile, status="ready")
+                    else:
+                        write_profile_state(profile, status="needs_login")
                 page.wait_for_timeout(1_000)
             return 0
         finally:
             context.close()
+            clear_profile_state(profile)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

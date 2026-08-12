@@ -32,17 +32,12 @@ try:
         redact_text,
         timestamp_kst,
     )
-    from .naver_session import (
-        ensure_keep_login_checked,
-        is_naver_login_required,
-        persistent_login_ready,
-    )
     from .profile_connector import (
-        connect_profile_context,
         connector_endpoint,
         open_profile_browser,
         profile_lock_exists,
     )
+    from .profile_runtime import read_profile_state
 except ImportError:  # Direct execution: ``python scripts/profiles.py``.
     from mato_common import (  # type: ignore[no-redef]
         SCHEMA_VERSION,
@@ -56,17 +51,12 @@ except ImportError:  # Direct execution: ``python scripts/profiles.py``.
         redact_text,
         timestamp_kst,
     )
-    from naver_session import (  # type: ignore[no-redef]
-        ensure_keep_login_checked,
-        is_naver_login_required,
-        persistent_login_ready,
-    )
     from profile_connector import (  # type: ignore[no-redef]
-        connect_profile_context,
         connector_endpoint,
         open_profile_browser,
         profile_lock_exists,
     )
+    from profile_runtime import read_profile_state  # type: ignore[no-redef]
 
 
 PROFILE_DIR_RE = re.compile(r"^naver_([1-9][0-9]*)$", re.IGNORECASE)
@@ -610,68 +600,15 @@ def _remaining_navigation_timeout_ms(deadline: float) -> int:
     return min(60_000, max(3_000, remaining_ms))
 
 
-def _verify_login_after_clean_reopen(
-    playwright: Any,
-    *,
-    user_data_dir: Path,
-    start_url: str,
-    write_url: str | None,
-) -> str:
-    """Reopen an owned profile once before reporting a durable login.
-
-    A visible page can look authenticated while Chrome still has the session
-    only in memory. Closing that one dedicated Chrome context normally flushes
-    the profile database; reopening it verifies the next use of the same
-    numbered profile can still reach Naver without a login screen. No cookies
-    or credentials are read, copied, or saved by this check.
-    """
-
-    context = None
-    try:
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(user_data_dir),
-            channel="chrome",
-            headless=False,
-            locale="ko-KR",
-            timezone_id="Asia/Seoul",
-            viewport={"width": 1280, "height": 1024},
-        )
-        page = context.pages[0] if context.pages else context.new_page()
-        page.goto(start_url, wait_until="domcontentloaded", timeout=60_000)
-        page.wait_for_timeout(6_500 if start_url == NAVER_HOME_URL else 1_500)
-        if _is_access_restricted(page):
-            return "error"
-        if is_naver_login_required(page, context):
-            return "needs_login"
-        if not write_url:
-            return "logged_in"
-
-        page.goto(write_url, wait_until="domcontentloaded", timeout=60_000)
-        page.wait_for_timeout(6_500)
-        if _is_access_restricted(page):
-            return "error"
-        if is_naver_login_required(page, context):
-            return "needs_login"
-        return "ready" if _is_editor_ready(page) else "error"
-    except Exception:
-        return "error"
-    finally:
-        if context is not None:
-            try:
-                context.close()
-            except Exception:
-                pass
-
-
 def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -> str:
-    """Open visible Chrome, preserve its login, and confirm editor access."""
+    """Read login status from the Playwright process that owns the profile.
 
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError(
-            "Playwright가 설치되어 있지 않습니다. 플러그인 설치 절차를 먼저 실행하세요."
-        ) from exc
+    Mato Helper launches a persistent context and performs login detection and
+    cookie persistence inside that same context. This command follows the same
+    ownership rule: it starts the dedicated host when needed, then polls only a
+    non-sensitive status file. It never attaches a second Playwright process to
+    the visible browser and therefore cannot close the user's profile window.
+    """
 
     if timeout_seconds <= 0:
         raise ValueError("--timeout은 1초 이상이어야 합니다.")
@@ -679,113 +616,27 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
     user_data_dir = Path(str(profile["profile_path"]))
     if not _is_safe_profile_directory(user_data_dir, int(profile["slot"])):
         raise RuntimeError(f"프로필 폴더가 없거나 안전하지 않습니다: {user_data_dir}")
-    start_url, write_url = _profile_check_urls(profile)
-    login_only = write_url is None
     deadline = time.monotonic() + timeout_seconds
 
-    def _go_within_deadline(page: Any, url: str) -> None:
-        """Navigate without allowing a single page load to outlive the check."""
-
-        page.goto(
-            url,
-            wait_until="domcontentloaded",
-            timeout=_remaining_navigation_timeout_ms(deadline),
-        )
-
     print(
-        "Chrome에서 네이버 홈의 로그인 상태를 확인한 뒤 글쓰기 화면을 엽니다. "
+        "전용 Playwright 프로필에서 네이버 로그인 상태를 확인합니다. "
         "비밀번호는 이 프로그램에 입력하거나 저장하지 않습니다.",
         file=sys.stderr,
     )
-    with sync_playwright() as playwright:
-        attached = connect_profile_context(playwright, user_data_dir)
-        owns_context = attached is None
-        if attached is not None:
-            _browser, context = attached
-        else:
-            try:
-                context = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(user_data_dir),
-                    channel="chrome",
-                    headless=False,
-                    locale="ko-KR",
-                    timezone_id="Asia/Seoul",
-                    viewport={"width": 1280, "height": 1024},
-                )
-            except Exception as exc:
-                raise RuntimeError(f"설치된 Chrome을 열지 못했습니다: {exc}") from exc
-
-        def _durable_result() -> str:
-            """Verify a newly checked owned profile after a graceful close."""
-
-            nonlocal owns_context
-            if not owns_context:
-                # A connector-owned profile remains open in Chrome, so this
-                # task must not close the user's visible profile to probe it.
-                return "logged_in" if login_only else "ready"
-            context.close()
-            owns_context = False
-            return _verify_login_after_clean_reopen(
-                playwright,
-                user_data_dir=user_data_dir,
-                start_url=start_url,
-                write_url=write_url,
-            )
-
-        try:
-            page = context.pages[0] if context.pages else context.new_page()
-            _go_within_deadline(page, start_url)
-            page.wait_for_timeout(6_500 if start_url == NAVER_HOME_URL else 1_500)
-            if _is_access_restricted(page):
+    last_status = "starting"
+    state = read_profile_state(user_data_dir)
+    if state is None:
+        open_profile_browser(profile)
+    while time.monotonic() < deadline:
+        state = read_profile_state(user_data_dir)
+        if state is not None:
+            last_status = str(state["status"])
+            if last_status == "ready":
+                return "ready"
+            if last_status == "error":
                 return "error"
-
-            target_checked = False
-            if is_naver_login_required(page, context):
-                if not _is_login_page(page):
-                    _go_within_deadline(page, NAVER_LOGIN_URL)
-                    page.wait_for_timeout(1_500)
-                ensure_keep_login_checked(page)
-                print(
-                    "Chrome에서 직접 로그인해 주세요. 로그인 상태 유지 옵션은 자동으로 확인합니다.",
-                    file=sys.stderr,
-                )
-            elif not login_only and write_url:
-                _go_within_deadline(page, write_url)
-                page.wait_for_timeout(6_500)
-                target_checked = True
-
-            while time.monotonic() < deadline:
-                if _is_access_restricted(page):
-                    return "error"
-                if is_naver_login_required(page, context):
-                    ensure_keep_login_checked(page)
-                    target_checked = False
-                else:
-                    if not login_only and write_url and not target_checked:
-                        _go_within_deadline(page, write_url)
-                        page.wait_for_timeout(6_500)
-                        target_checked = True
-                        if _is_access_restricted(page):
-                            return "error"
-                        if is_naver_login_required(page, context):
-                            continue
-                    if persistent_login_ready(context, page):
-                        if login_only:
-                            return _durable_result()
-                        if _is_editor_ready(page):
-                            return _durable_result()
-                try:
-                    page.wait_for_timeout(1_000)
-                except Exception:
-                    return "error"
-            if is_naver_login_required(page, context):
-                return "needs_login"
-            if login_only and persistent_login_ready(context, page):
-                return _durable_result()
-            return "error"
-        finally:
-            if owns_context:
-                context.close()
+        time.sleep(0.5)
+    return "needs_login" if last_status == "needs_login" else "error"
 
 
 def open_profiles(profile_slots: str | Iterable[int | str]) -> list[dict[str, Any]]:
