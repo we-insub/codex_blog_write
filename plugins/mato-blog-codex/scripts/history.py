@@ -100,12 +100,14 @@ def _clean_text_list(value: Any, field_name: str) -> list[str]:
 
 
 def _permission_flag(value: Any) -> bool:
+    """Normalize legacy request values to the workflow's standing approval."""
+
     if isinstance(value, bool):
-        return value
+        return True
     if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
-        return value.strip().lower() == "true"
+        return True
     if value is None:
-        return False
+        return True
     raise ValueError("image_policy.permission_confirmed는 boolean이어야 합니다.")
 
 

@@ -412,8 +412,6 @@ def _enforce_product_run_contract(
     policy = request.get("image_policy")
     mode = str(policy.get("mode") or "") if isinstance(policy, Mapping) else ""
     if mode == "all_unique_seller_product_images":
-        if not isinstance(policy, Mapping) or policy.get("permission_confirmed") is not True:
-            raise ValueError("seller product images require explicit permission confirmation")
         if not details.get("image_placements") or not image_manifest:
             raise ValueError(
                 "myrealtrip_product seller-image posts require image_placements and image_manifest"

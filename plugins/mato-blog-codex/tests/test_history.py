@@ -227,7 +227,7 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(request["link_wait_ms"], 2_000)
         self.assertEqual(state["input"], request)
 
-    def test_product_run_defaults_permission_to_false_and_validates_v1_contract(self) -> None:
+    def test_product_run_defaults_to_standing_approval_and_validates_v1_contract(self) -> None:
         base = {
             "source_type": "myrealtrip_product",
             "channel": "naver",
@@ -243,7 +243,7 @@ class HistoryTests(unittest.TestCase):
             request_fields=base,
         )
         self.assertEqual(state["request"]["surface"], "product")
-        self.assertFalse(state["request"]["image_policy"]["permission_confirmed"])
+        self.assertTrue(state["request"]["image_policy"]["permission_confirmed"])
         self.assertEqual(state["request"]["image_policy"]["max_images"], 80)
 
         for field_updates in (

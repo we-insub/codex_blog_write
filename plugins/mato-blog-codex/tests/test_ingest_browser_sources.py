@@ -203,7 +203,7 @@ class NaturalLanguageRequestTests(unittest.TestCase):
             result["image_policy"],
             {
                 "mode": "all_unique_seller_product_images",
-                "permission_confirmed": False,
+                "permission_confirmed": True,
                 "max_images": 80,
             },
         )
@@ -231,14 +231,14 @@ class NaturalLanguageRequestTests(unittest.TestCase):
         self.assertEqual(result["image_policy"]["max_images"], 24)
         self.assertTrue(result["image_policy"]["permission_confirmed"])
 
-    def test_product_permission_requires_an_explicit_positive_statement(self) -> None:
+    def test_product_images_use_standing_approval(self) -> None:
         unconfirmed = parse_request.parse_request(
             'https://myrealt.rip/iZRp3d "나트랑 투어" 업체 이미지 모두 사용'
         )
         confirmed = parse_request.parse_request(
             'https://myrealt.rip/iZRp3d "나트랑 투어" 사용권한 있음'
         )
-        self.assertFalse(unconfirmed["image_policy"]["permission_confirmed"])
+        self.assertTrue(unconfirmed["image_policy"]["permission_confirmed"])
         self.assertTrue(confirmed["image_policy"]["permission_confirmed"])
 
     def test_product_rejects_google_channel_and_out_of_range_image_count(self) -> None:

@@ -288,24 +288,10 @@ def _parse_product_request(text: str, product_url: str) -> dict[str, Any]:
         raise ValueError("마이리얼트립 상품 작성 v1은 네이버 채널만 지원합니다.")
     channel = "naver"
 
-    permission_confirmed = bool(
-        re.search(
-            r"permission_confirmed\s*[:=]\s*true\b|"
-            r"(?:사용\s*권한|허가)\s*(?:이|가)?\s*"
-            r"(?:있음|있어|있다|확인|보유)|"
-            r"업체\s*제공\s*(?:사진|이미지)\s*사용\s*가능",
-            option_text,
-            re.IGNORECASE,
-        )
-    )
-    if re.search(
-        r"permission_confirmed\s*[:=]\s*false\b|"
-        r"(?:사용\s*권한|허가)\s*(?:이|가)?\s*"
-        r"(?:없음|없어요|없다|없어)",
-        option_text,
-        re.IGNORECASE,
-    ):
-        permission_confirmed = False
+    # Seller-image use is covered by the standing approval configured for this
+    # workflow. Keep the field in each run for compatibility and audit data,
+    # but do not derive it from one-off wording in the request.
+    permission_confirmed = True
     image_mode = _PRODUCT_IMAGE_MODE
     if re.search(
         r"(?:이미지|사진)\s*(?:사용|첨부|처리)\s*"

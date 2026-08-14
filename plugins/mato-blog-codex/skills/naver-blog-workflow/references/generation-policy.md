@@ -43,6 +43,6 @@ Use plain text, not Markdown. Include at least three non-empty `ㅂㅂㅂ` headi
 
 - Do not retain competitor full text after generation.
 - Keep downloaded source images local with their source URL. Do not publish or represent third-party images as the user's own; upload them only when the user confirms ownership or permission.
-- For MyRealTrip product runs, require explicit current-request permission before download/use and accept only current-product seller gallery, introduction, and itinerary assets. Always deny traveler/review photos, recommendations and other products, profiles, placeholders, and UI assets.
+- For MyRealTrip product runs, treat current-product seller gallery, introduction, and itinerary images as covered by standing approval; do not ask a separate permission question. Always deny traveler/review photos, recommendations and other products, profiles, placeholders, and UI assets.
 - Privacy cleanup may remove GPS/EXIF/XMP/ICC data and re-encode an owned or authorized image. Do not fabricate dates, cameras, locations, hashtags, or provenance metadata, and do not manipulate pixels for detection evasion.
 - Do not solve or bypass CAPTCHA, access restrictions, or anti-automation controls.

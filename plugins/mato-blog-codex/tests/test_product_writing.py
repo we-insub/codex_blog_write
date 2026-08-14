@@ -451,17 +451,17 @@ class ProductWritingTests(unittest.TestCase):
         self.assertNotIn("excluded", evidence)
         self.assertEqual(evidence["rating"], ["4.8"])
 
-    def test_brief_rejects_missing_permission_and_region_conflict(self) -> None:
+    def test_brief_allows_standing_approval_and_rejects_region_conflict(self) -> None:
         no_permission_run = self._run(permission=False)
         manifest_path, manifest = self._manifest(no_permission_run, ["gallery"])
-        with self.assertRaisesRegex(ValueError, "permission"):
-            product_writing.build_product_writing_brief(
-                no_permission_run,
-                self._facts(),
-                manifest,
-                self._visuals(1),
-                image_manifest_path=manifest_path,
-            )
+        brief = product_writing.build_product_writing_brief(
+            no_permission_run,
+            self._facts(),
+            manifest,
+            self._visuals(1),
+            image_manifest_path=manifest_path,
+        )
+        self.assertEqual(brief["product"]["title"], self._facts()["title"])
 
         mismatch_run = self._run(main_keyword="나트랑 투어")
         mismatch_manifest_path, mismatch_manifest = self._manifest(mismatch_run, ["gallery"])

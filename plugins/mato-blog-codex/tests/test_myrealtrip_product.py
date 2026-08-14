@@ -329,11 +329,11 @@ class ProductHTMLTests(unittest.TestCase):
             rendered_fixture(), page_url=CANONICAL_URL
         )
 
-        self.assertEqual(result["candidate_count"], 4)
-        self.assertEqual(result["requires_hydration_count"], 1)
+        self.assertEqual(result["candidate_count"], 1)
+        self.assertEqual(result["requires_hydration_count"], 0)
         self.assertEqual(
             [row["source_role"] for row in result["allowed"]],
-            ["gallery", "introduction", "introduction", "itinerary"],
+            ["gallery"],
         )
         self.assertTrue(all(row["classification"] == "product" for row in result["allowed"]))
         self.assertTrue(any(row["classification"] == "review" for row in result["rejected"]))
@@ -342,6 +342,18 @@ class ProductHTMLTests(unittest.TestCase):
         )
         self.assertTrue(any(row["classification"] == "placeholder" for row in result["rejected"]))
         self.assertFalse(any("other-product" in str(row["source_url"]) for row in result["allowed"]))
+        self.assertTrue(
+            any(
+                row["rejection_reason"] == "seller_introduction_graphic"
+                for row in result["rejected"]
+            )
+        )
+        self.assertTrue(
+            any(
+                row["rejection_reason"] == "seller_itinerary_graphic"
+                for row in result["rejected"]
+            )
+        )
 
         for unsafe_html in (
             rendered_fixture().replace(
@@ -379,7 +391,7 @@ class ProductHTMLTests(unittest.TestCase):
             any("example.com" in str(row["source_url"]) for row in classified["rejected"])
         )
 
-    def test_lazy_hydration_inherits_dom_role_and_rejects_review_urls(self) -> None:
+    def test_hydration_uses_only_gallery_photos_and_rejects_review_urls(self) -> None:
         classified = myrealtrip_product.classify_image_candidates(
             rendered_fixture(), page_url=CANONICAL_URL
         )
@@ -402,9 +414,9 @@ class ProductHTMLTests(unittest.TestCase):
             hydration_rows,
             page_url=CANONICAL_URL,
         )
-        lazy = next(row for row in hydrated if row.candidate_id == "introduction:2")
-        self.assertEqual(lazy.source_url, f"{SELLER_BASE}/lazy.jpg")
-        self.assertEqual((lazy.natural_width, lazy.natural_height), (1200, 800))
+        gallery = next(row for row in hydrated if row.candidate_id == "gallery:1")
+        self.assertEqual(gallery.source_url, f"{SELLER_BASE}/a.jpg")
+        self.assertEqual((gallery.natural_width, gallery.natural_height), (1200, 800))
 
         # A static src is not proof that the browser decoded the image.
         with self.assertRaises(myrealtrip_product.ProductImageError):
@@ -416,7 +428,7 @@ class ProductHTMLTests(unittest.TestCase):
 
         with self.assertRaises(myrealtrip_product.ProductImageError):
             unsafe_rows = [dict(row) for row in hydration_rows]
-            unsafe = next(row for row in unsafe_rows if row["candidate_id"] == "introduction:2")
+            unsafe = next(row for row in unsafe_rows if row["candidate_id"] == "gallery:1")
             unsafe["current_src"] = "https://d6bztw1vgnv55.cloudfront.net/1/review/x.jpeg"
             myrealtrip_product.validate_hydrated_candidates(
                 classified,
@@ -761,7 +773,7 @@ class ProductCLITests(unittest.TestCase):
             self.assertEqual(code, 0, stdout.getvalue())
             result = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(result["kind"], "myrealtrip_browser_hydration_candidates")
-            self.assertEqual(result["candidate_count"], 4)
+            self.assertEqual(result["candidate_count"], 1)
             self.assertIn("ITINERARIES", result["available_sections"])
             self.assertEqual(result["candidates"][0]["candidate_id"], "gallery:1")
             self.assertEqual(result["candidates"][0]["document_image_index"], 0)

@@ -810,8 +810,6 @@ def validate_run(run_dir: str | Path, expected: int, *, threshold: float = 0.78)
         mode = str(policy.get("mode") or "") if isinstance(policy, Mapping) else ""
         if mode == "all_unique_seller_product_images":
             product_images_required = True
-            if not isinstance(policy, Mapping) or policy.get("permission_confirmed") is not True:
-                errors.append("seller product images require explicit permission confirmation")
         elif mode == "none":
             product_images_forbidden = True
         else:

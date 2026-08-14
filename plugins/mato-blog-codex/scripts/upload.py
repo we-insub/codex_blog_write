@@ -904,7 +904,9 @@ class NaverTextUploader:
             raise
         except Exception as exc:
             raise UploadError(
-                f"Could not upload image: {image_path.name}", code="image_upload_failed"
+                "Could not upload image: "
+                f"{image_path.name} ({type(exc).__name__}: {exc})",
+                code="image_upload_failed",
             ) from exc
 
     def _create_text_block_after_image(self) -> None:

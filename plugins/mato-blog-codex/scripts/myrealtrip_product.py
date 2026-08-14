@@ -787,7 +787,7 @@ def classify_image_candidates(rendered_html: str, *, page_url: str) -> dict[str,
     base_url = reference.canonical_url or reference.input_url
     soup = BeautifulSoup(rendered_html, "html.parser")
     rows: list[ImageCandidate] = []
-    role_counts = {"gallery": 0, "introduction": 0, "itinerary": 0}
+    role_counts = {"gallery": 0}
 
     # ``document.images`` does not include image markup held in inert
     # ``template`` content or the scripting-enabled ``noscript`` fallback.
@@ -871,11 +871,16 @@ def classify_image_candidates(rendered_html: str, *, page_url: str) -> dict[str,
             section_id == "INTRODUCTION"
             and _has_ancestor_class_prefix(image, ("e1kcu58w2",))
         ):
-            classification, role, allowed, reason = "product", "introduction", True, None
+            # Seller introductory artwork can be delivered from the same CDN
+            # as tour photos. It is not a gallery photo and must never enter
+            # the downloadable product-image set.
+            classification, reason = "excluded", "seller_introduction_graphic"
         elif section_id == "ITINERARIES" and (
             "e7xe4ph14" in classes or _has_ancestor_class_prefix(image, ("e7xe4ph",))
         ):
-            classification, role, allowed, reason = "product", "itinerary", True, None
+            # Likewise, itinerary cards are explanatory graphics rather than
+            # the actual tour-gallery photos requested for blog use.
+            classification, reason = "excluded", "seller_itinerary_graphic"
         elif path.endswith(".svg") or "icon" in alt.lower():
             classification, reason = "ui", "ui_image"
 

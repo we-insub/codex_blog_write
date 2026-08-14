@@ -82,6 +82,8 @@ git clone https://github.com/we-insub/codex_blog_write.git
 cd codex_blog_write
 ```
 
+복제만 하면 코드와 문서만 받아집니다. Codex가 블로그 작업 지침을 인식하게 하려면 이어서 아래 플러그인 등록 명령을 반드시 실행하고 Codex를 재시작합니다. 저장소 최상위의 `AGENTS.md`는 일반 작업 안내이고, 실제 블로그 작업 규칙은 플러그인 설치 뒤 적용됩니다.
+
 저장소를 Codex 로컬 마켓플레이스로 등록하고 플러그인을 설치합니다.
 
 ```shell

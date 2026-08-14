@@ -1,4 +1,4 @@
 interface:
   display_name: "Mato Naver Blog Workflow"
-  short_description: "네이버 검색·마이리얼트립 상품 원고 생성과 프로필 업로드"
-  default_prompt: "Use $naver-blog-workflow to create and validate a Naver draft from my search keyword or MyRealTrip product URL."
+  short_description: "네이버·마이리얼트립 원고 생성과 사진역순 재작성"
+  default_prompt: "Use $naver-blog-workflow to create a Naver draft from my product URL or rewrite raw Naver photo captions with 사진역순."
