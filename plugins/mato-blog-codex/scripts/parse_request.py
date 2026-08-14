@@ -11,6 +11,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import urlparse
 
 
 _QUOTED_TEXT_RE = re.compile(
@@ -24,6 +25,41 @@ _UPLOAD_PROHIBITION_RE = re.compile(
     r"(?:하지\s*마|하지\s*말|금지|안\s*(?:해|해주세요|할래))",
     re.IGNORECASE,
 )
+_WEB_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+_PRODUCT_FIELD_RE = re.compile(
+    r"(?:^|[;|])\s*(?:[-*•]\s*)?"
+    r"(?P<label>"
+    r"메인\s*키워드|main\s*keyword|"
+    r"서브\s*키워드|sub\s*keywords?|"
+    r"후킹\s*문구|후킹|hook|"
+    r"동행자|동행|companions?|"
+    r"경험(?:\s*(?:노트|메모))?|experience\s*notes?"
+    r")\s*(?:(?:[:=：])|(?:은|는))?\s*",
+    re.IGNORECASE,
+)
+
+_PRODUCT_FIELD_NAMES = {
+    "메인키워드": "main_keyword",
+    "mainkeyword": "main_keyword",
+    "서브키워드": "subkeywords",
+    "subkeyword": "subkeywords",
+    "subkeywords": "subkeywords",
+    "후킹": "hook",
+    "후킹문구": "hook",
+    "hook": "hook",
+    "동행": "companions",
+    "동행자": "companions",
+    "companion": "companions",
+    "companions": "companions",
+    "경험": "experience_notes",
+    "경험노트": "experience_notes",
+    "경험메모": "experience_notes",
+    "experiencenote": "experience_notes",
+    "experiencenotes": "experience_notes",
+}
+
+_PRODUCT_IMAGE_MODE = "all_unique_seller_product_images"
+_PRODUCT_MAX_IMAGES = 80
 
 
 def _parse_profiles(command: str) -> list[int]:
@@ -42,6 +78,104 @@ def _parse_profiles(command: str) -> list[int]:
                 slots.append(slot)
         return slots
     return []
+
+
+def _trim_url(value: str) -> str:
+    """Remove Markdown/sentence punctuation that cannot be part of a URL."""
+
+    return value.rstrip(".,;:!?。,)]}〉》」』”’")
+
+
+def _is_myrealtrip_product_url(value: str) -> bool:
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    path = parsed.path.rstrip("/")
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+    ):
+        return False
+    if host == "myrealt.rip":
+        return bool(re.fullmatch(r"/[A-Za-z0-9_-]{4,64}", path) and not parsed.query)
+    if host == "experiences.myrealtrip.com":
+        return bool(re.fullmatch(r"/products/[^/]+", path, re.IGNORECASE))
+    if host in {"myrealtrip.com", "www.myrealtrip.com"}:
+        return bool(
+            path == "/main/bridge/marketing"
+            and re.search(r"(?:^|&)return_url=", parsed.query, re.IGNORECASE)
+        )
+    return False
+
+
+def extract_product_url(command: str) -> str:
+    """Return the first MyRealTrip product/short URL, without Markdown syntax."""
+
+    for match in _WEB_URL_RE.finditer(str(command or "")):
+        candidate = _trim_url(match.group(0))
+        if _is_myrealtrip_product_url(candidate):
+            return candidate
+    return ""
+
+
+def _without_urls(value: str) -> str:
+    return _WEB_URL_RE.sub(lambda match: " " * len(match.group(0)), value)
+
+
+def _field_key(label: str) -> str:
+    normalized = re.sub(r"\s+", "", label).lower()
+    return _PRODUCT_FIELD_NAMES.get(normalized, "")
+
+
+def _extract_product_fields(command: str) -> dict[str, list[str]]:
+    """Parse labelled product inputs while leaving free-form prose untouched."""
+
+    result: dict[str, list[str]] = {}
+    for raw_line in str(command or "").splitlines():
+        line = _without_urls(raw_line)
+        matches = list(_PRODUCT_FIELD_RE.finditer(line))
+        for index, match in enumerate(matches):
+            key = _field_key(match.group("label"))
+            if not key:
+                continue
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(line)
+            value = line[match.end() : end].strip(" \t,;|:=：-")
+            if value:
+                result.setdefault(key, []).append(value)
+    return result
+
+
+def _split_list_fields(values: Sequence[str], *, split_commas: bool = True) -> list[str]:
+    pattern = r"\s*(?:,|/|\||\+)\s*" if split_commas else r"\s*(?:\||\+)\s*"
+    result: list[str] = []
+    for value in values:
+        for item in re.split(pattern, value):
+            cleaned = re.sub(r"\s+", " ", item).strip(" ,;|+-")
+            if cleaned and cleaned not in result:
+                result.append(cleaned)
+    return result
+
+
+def _parse_product_max_images(option_text: str) -> int:
+    patterns = (
+        r"(?:이미지|사진)\s*(?:은|는|을|를)?\s*(?:최대\s*)?(\d+)\s*(?:개|장)",
+        r"최대\s*(\d+)\s*(?:개|장)\s*(?:의\s*)?(?:이미지|사진)",
+        r"max_images\s*[:=]\s*(\d+)",
+        r"max(?:imum)?\s*images?\s*[:=]?\s*(\d+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, option_text, re.IGNORECASE)
+        if match:
+            value = int(match.group(1))
+            if not 1 <= value <= _PRODUCT_MAX_IMAGES:
+                raise ValueError("상품 이미지는 1장 이상 80장까지만 허용됩니다.")
+            return value
+    return _PRODUCT_MAX_IMAGES
 
 
 def _extract_unquoted_keyword(command: str) -> str:
@@ -92,10 +226,130 @@ def _extract_keyword(command: str) -> str:
     return keyword
 
 
+def _parse_product_request(text: str, product_url: str) -> dict[str, Any]:
+    quoted_keyword, quoted_safe_options = _split_keyword_and_options(text)
+    option_text = _without_urls(quoted_safe_options)
+    fields = _extract_product_fields(text)
+
+    main_values = fields.get("main_keyword", [])
+    main_keyword = re.sub(r"\s+", " ", main_values[0]).strip() if main_values else ""
+    if (
+        not main_keyword
+        and _QUOTED_TEXT_RE.search(text)
+        and quoted_keyword
+        and not extract_product_url(quoted_keyword)
+    ):
+        main_keyword = re.sub(r"\s+", " ", quoted_keyword).strip()
+
+    subkeywords = _split_list_fields(fields.get("subkeywords", []))
+    companions = _split_list_fields(fields.get("companions", []))
+    experience_notes = _split_list_fields(
+        fields.get("experience_notes", []), split_commas=False
+    )
+    hook_values = fields.get("hook", [])
+    hook = re.sub(r"\s+", " ", hook_values[0]).strip() if hook_values else ""
+
+    channel_text = "\n".join(
+        line
+        for line in option_text.splitlines()
+        if not _PRODUCT_FIELD_RE.match(_without_urls(line))
+    )
+    compact = re.sub(r"\s+", "", channel_text).lower()
+    upload_prohibited = bool(_UPLOAD_PROHIBITION_RE.search(option_text))
+    explicit_publish = bool(
+        re.search(r"(?:자동\s*|바로\s*)?발행", option_text, re.IGNORECASE)
+    )
+    mode = "publish" if not upload_prohibited and explicit_publish else "draft"
+    version_text = re.sub(
+        r"(?:이미지|사진)\s*(?:은|는|을|를)?\s*(?:최대\s*)?\d+\s*(?:개|장)",
+        " ",
+        option_text,
+        flags=re.IGNORECASE,
+    )
+    version_text = re.sub(
+        r"최대\s*\d+\s*(?:개|장)\s*(?:의\s*)?(?:이미지|사진)",
+        " ",
+        version_text,
+        flags=re.IGNORECASE,
+    )
+    version_text = re.sub(
+        r"(?:\d+(?:\s*[,/]\s*\d+)*\s*번?\s*프로필|"
+        r"프로필\s*\d+(?:\s*[,/]\s*\d+)*)",
+        " ",
+        version_text,
+        flags=re.IGNORECASE,
+    )
+    versions_match = re.search(r"(\d+)\s*(?:개|가지|버전)", version_text)
+    versions = int(versions_match.group(1)) if versions_match else 1
+    if versions <= 0:
+        raise ValueError("versions must be positive")
+    profiles = _parse_profiles(option_text)
+    if re.search(r"(?:구글|google)", compact, re.IGNORECASE):
+        raise ValueError("마이리얼트립 상품 작성 v1은 네이버 채널만 지원합니다.")
+    channel = "naver"
+
+    permission_confirmed = bool(
+        re.search(
+            r"permission_confirmed\s*[:=]\s*true\b|"
+            r"(?:사용\s*권한|허가)\s*(?:이|가)?\s*"
+            r"(?:있음|있어|있다|확인|보유)|"
+            r"업체\s*제공\s*(?:사진|이미지)\s*사용\s*가능",
+            option_text,
+            re.IGNORECASE,
+        )
+    )
+    if re.search(
+        r"permission_confirmed\s*[:=]\s*false\b|"
+        r"(?:사용\s*권한|허가)\s*(?:이|가)?\s*"
+        r"(?:없음|없어요|없다|없어)",
+        option_text,
+        re.IGNORECASE,
+    ):
+        permission_confirmed = False
+    image_mode = _PRODUCT_IMAGE_MODE
+    if re.search(
+        r"(?:이미지|사진)\s*(?:사용|첨부|처리)\s*"
+        r"(?:안\s*해|하지\s*마|없이|없음)",
+        option_text,
+        re.IGNORECASE,
+    ):
+        image_mode = "none"
+
+    return {
+        "source_type": "myrealtrip_product",
+        "channel": channel,
+        "product_url": product_url,
+        # Kept for older run helpers; the URL is deliberately never used here.
+        "keyword": main_keyword,
+        "main_keyword": main_keyword,
+        "subkeywords": subkeywords,
+        "hook": hook,
+        "companions": companions,
+        "experience_notes": experience_notes,
+        "surface": "product",
+        "versions": versions,
+        "profiles": profiles,
+        "mode": mode,
+        "upload_requested": bool(profiles) and not upload_prohibited,
+        "publish_confirmation_required": False,
+        "publish_authorized": mode == "publish",
+        "image_policy": {
+            "mode": image_mode,
+            "permission_confirmed": permission_confirmed,
+            "max_images": _parse_product_max_images(option_text),
+        },
+        "link_wait_ms": 2_000,
+        "original_command": text,
+    }
+
+
 def parse_request(command: str) -> dict[str, Any]:
     text = str(command or "").strip()
     if not text:
         raise ValueError("command is empty")
+    product_url = extract_product_url(text)
+    if product_url:
+        return _parse_product_request(text, product_url)
     keyword, option_text = _split_keyword_and_options(text)
     compact = re.sub(r"\s+", "", option_text).lower()
     upload_prohibited = bool(_UPLOAD_PROHIBITION_RE.search(option_text))

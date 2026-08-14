@@ -25,7 +25,7 @@ try:
         persistent_login_ready,
     )
     from .profiles import get_profile, round_robin_assign
-    from .profile_connector import connect_profile_context
+    from .profile_connector import connect_profile_context, open_profile_browser
     from .validate_posts import parse_mato_text, verify_validation_manifest
 except ImportError:
     from collect import normalize_naver_post_url  # type: ignore[no-redef]
@@ -37,7 +37,10 @@ except ImportError:
         persistent_login_ready,
     )
     from profiles import get_profile, round_robin_assign  # type: ignore[no-redef]
-    from profile_connector import connect_profile_context  # type: ignore[no-redef]
+    from profile_connector import (  # type: ignore[no-redef]
+        connect_profile_context,
+        open_profile_browser,
+    )
     from validate_posts import parse_mato_text, verify_validation_manifest  # type: ignore[no-redef]
 
 
@@ -72,6 +75,24 @@ PLACEHOLDER_TYPING_DELAY_MS = 30
 TABLE_DELAY_MS = 1_500
 TABLE_SELECT_DELAY_MS = 2_500
 TABLE_DELETE_DELAY_MS = 2_500
+DEFAULT_LINK_CARD_WAIT_MS = 4_000
+PRODUCT_LINK_CARD_WAIT_MS = 2_000
+IMAGE_UPLOAD_TIMEOUT_MS = 30_000
+EDITOR_IMAGE_COMPONENT_SELECTOR = (
+    ".se-component.se-image, .se-component[data-module='image']"
+)
+EDITOR_IMAGE_ERROR_SELECTOR = (
+    ":scope[data-state='error'], :scope[aria-invalid='true'], "
+    ".se-image-status-error, .se-upload-error, "
+    "[data-state='error'], [aria-invalid='true']"
+)
+EDITOR_IMAGE_BUSY_SELECTOR = (
+    ":scope[data-state='uploading'], :scope[data-state='progress'], "
+    ":scope[aria-busy='true'], .se-image-status-uploading, "
+    ".se-image-status-progress, .se-image-uploading, .se-upload-progress, "
+    ".se-progress, [data-state='uploading'], [data-state='progress'], "
+    "[aria-busy='true'], [role='progressbar'], progress"
+)
 RESTRICTION_TEXT = ("captcha", "자동입력 방지", "비정상적인 접근", "접근이 제한", "보안 확인")
 DRAFT_SUCCESS_SELECTORS = (
     "[role='alert']:has-text('임시저장이 완료되었습니다')",
@@ -247,8 +268,37 @@ def _normalize_naver_write_url(value: str) -> str:
     return write_url
 
 
+def _link_card_wait_ms(run: Mapping[str, Any]) -> int:
+    """Return the run-scoped link-card delay without changing legacy runs."""
+
+    request = run.get("request")
+    if not isinstance(request, Mapping):
+        return DEFAULT_LINK_CARD_WAIT_MS
+    if str(request.get("source_type") or "") == "myrealtrip_product":
+        raw_product = request.get("link_wait_ms", PRODUCT_LINK_CARD_WAIT_MS)
+        try:
+            if int(raw_product) != PRODUCT_LINK_CARD_WAIT_MS:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise ValueError("myrealtrip_product link_wait_ms must be exactly 2000") from None
+        return PRODUCT_LINK_CARD_WAIT_MS
+    raw = request.get("link_wait_ms")
+    if raw is None:
+        return DEFAULT_LINK_CARD_WAIT_MS
+    try:
+        return max(0, min(int(raw), 30_000))
+    except (TypeError, ValueError):
+        raise ValueError("request.link_wait_ms must be an integer") from None
+
+
 def _load_post_items(run_dir: Path, run: Mapping[str, Any]) -> list[dict[str, Any]]:
     files = verify_validation_manifest(run_dir, run)
+    validation = run.get("validation")
+    asset_manifest_sha256 = ""
+    if isinstance(validation, Mapping):
+        candidate = str(validation.get("asset_manifest_sha256") or "").lower()
+        if re.fullmatch(r"[0-9a-f]{64}", candidate):
+            asset_manifest_sha256 = candidate
     items: list[dict[str, Any]] = []
     for index, path in enumerate(files, start=1):
         if not path.is_file():
@@ -262,6 +312,7 @@ def _load_post_items(run_dir: Path, run: Mapping[str, Any]) -> list[dict[str, An
                 "title": parsed["title"],
                 "file": str(path.relative_to(run_dir)),
                 "file_sha256": _file_sha256(path),
+                "asset_manifest_sha256": asset_manifest_sha256,
                 "body": _editor_body(parsed),
             }
         )
@@ -277,6 +328,7 @@ def _plan_signature(run_id: str, mode: str, slots: Sequence[int], assignments: S
             {
                 "file": item["file"],
                 "file_sha256": item["file_sha256"],
+                "asset_manifest_sha256": item.get("asset_manifest_sha256", ""),
                 "profile_slot": item["profile_slot"],
                 "account_alias": item.get("account_alias"),
                 "blog_url": item.get("blog_url"),
@@ -322,6 +374,7 @@ def build_upload_plan(run_dir: str | Path, profiles: str, mode: str) -> dict[str
                 "title": item["title"],
                 "file": item["file"],
                 "file_sha256": item["file_sha256"],
+                "asset_manifest_sha256": item.get("asset_manifest_sha256", ""),
                 "profile_slot": int(profile["slot"]),
                 "profile_name": profile["name"],
                 "account_alias": profile.get("account_alias") or "(별칭 없음)",
@@ -547,10 +600,12 @@ class NaverTextUploader:
         *,
         login_timeout_seconds: int = 300,
         admin_subtitle_style: bool = False,
+        link_card_wait_ms: int = DEFAULT_LINK_CARD_WAIT_MS,
     ) -> None:
         self.page = page
         self.login_timeout_seconds = max(30, min(int(login_timeout_seconds), 900))
         self.admin_subtitle_style = bool(admin_subtitle_style)
+        self.link_card_wait_ms = max(0, min(int(link_card_wait_ms), 30_000))
 
     def _wait_for_manual_login(self) -> None:
         """Keep the visible profile window open until its user logs in normally."""
@@ -722,10 +777,83 @@ class NaverTextUploader:
         if button is None:
             raise UploadError("Image upload button was not found.", code="image_upload_failed")
         try:
+            frame = self._editor_frame()
+            components = frame.locator(EDITOR_IMAGE_COMPONENT_SELECTOR)
+            before_count = int(components.count())
             with self.page.expect_file_chooser(timeout=15_000) as chooser_info:
                 button.click(force=True, timeout=5_000)
             chooser_info.value.set_files(str(image_path))
-            self.page.wait_for_timeout(4_000)
+            deadline = time.monotonic() + (IMAGE_UPLOAD_TIMEOUT_MS / 1_000)
+            stable_remote_state: tuple[str, int, int] | None = None
+            stable_remote_checks = 0
+            while time.monotonic() < deadline:
+                current_count = int(components.count())
+                if current_count > before_count + 1:
+                    raise UploadError(
+                        "Image upload inserted an unexpected number of components.",
+                        code="image_upload_failed",
+                    )
+                if current_count == before_count + 1:
+                    latest = components.nth(current_count - 1)
+                    error_count = int(latest.locator(EDITOR_IMAGE_ERROR_SELECTOR).count())
+                    if error_count:
+                        raise UploadError(
+                            f"Image upload failed in the editor: {image_path.name}",
+                            code="image_upload_failed",
+                        )
+                    busy_count = int(latest.locator(EDITOR_IMAGE_BUSY_SELECTOR).count())
+                    if busy_count:
+                        stable_remote_state = None
+                        stable_remote_checks = 0
+                    else:
+                        images = latest.locator("img")
+                        if int(images.count()) > 0:
+                            raw_state = images.last.evaluate(
+                                "img => ({"
+                                "src: String(img.currentSrc || img.getAttribute('src') || img.src || ''),"
+                                "complete: Boolean(img.complete),"
+                                "width: Number(img.naturalWidth || 0),"
+                                "height: Number(img.naturalHeight || 0)"
+                                "})"
+                            )
+                            state = raw_state if isinstance(raw_state, Mapping) else {}
+                            source_url = str(state.get("src") or "").strip()
+                            try:
+                                natural_width = int(state.get("width") or 0)
+                                natural_height = int(state.get("height") or 0)
+                            except (TypeError, ValueError):
+                                natural_width = natural_height = 0
+                            remote_state = (source_url, natural_width, natural_height)
+                            remote_ready = bool(
+                                state.get("complete")
+                                and re.match(r"^https?://", source_url, re.IGNORECASE)
+                                and natural_width > 0
+                                and natural_height > 0
+                            )
+                            if remote_ready:
+                                if remote_state == stable_remote_state:
+                                    stable_remote_checks += 1
+                                else:
+                                    stable_remote_state = remote_state
+                                    stable_remote_checks = 1
+                                if stable_remote_checks >= 2:
+                                    return
+                            else:
+                                stable_remote_state = None
+                                stable_remote_checks = 0
+                        else:
+                            stable_remote_state = None
+                            stable_remote_checks = 0
+                else:
+                    stable_remote_state = None
+                    stable_remote_checks = 0
+                self.page.wait_for_timeout(250)
+            raise UploadError(
+                f"Image upload was not confirmed: {image_path.name}",
+                code="image_upload_failed",
+            )
+        except UploadError:
+            raise
         except Exception as exc:
             raise UploadError(
                 f"Could not upload image: {image_path.name}", code="image_upload_failed"
@@ -1145,7 +1273,7 @@ class NaverTextUploader:
                 if not pasted:
                     self.page.keyboard.type(line, delay=BODY_TYPING_DELAY_MS)
                 self.page.keyboard.press("Enter")
-                self.page.wait_for_timeout(4_000)
+                self.page.wait_for_timeout(self.link_card_wait_ms)
                 continue
 
             self.page.keyboard.type(line, delay=BODY_TYPING_DELAY_MS)
@@ -1317,7 +1445,9 @@ def _existing_upload_entries(run: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _entry_key(row: Mapping[str, Any], mode: str) -> str:
-    return f"{row['file']}|{row['file_sha256']}|{row['profile_slot']}|{mode}"
+    asset_hash = str(row.get("asset_manifest_sha256") or "")
+    asset_segment = f"|{asset_hash}" if asset_hash else ""
+    return f"{row['file']}|{row['file_sha256']}{asset_segment}|{row['profile_slot']}|{mode}"
 
 
 def _save_upload_state(run_dir: Path, mode: str, entries: Sequence[Mapping[str, Any]], status: str) -> None:
@@ -1482,11 +1612,35 @@ def _launch_context(playwright: Any, profile_path: str, *, headless: bool) -> An
 
 def _open_profile_context(
     playwright: Any,
-    profile_path: str,
+    profile: Mapping[str, Any],
     *,
     headless: bool,
 ) -> tuple[Any, bool, Any | None]:
-    """Reuse an open connector profile, otherwise launch an owned context."""
+    """Return a profile context while retaining every visible Chrome window.
+
+    Visible uploads always run through the detached profile host.  The host
+    owns the persistent context after this uploader disconnects, so finishing
+    one profile never closes its Chrome window before the next profile starts.
+    The explicit headless compatibility mode still uses a short-lived owned
+    context because there is no visible window to retain.
+    """
+
+    profile_path = str(profile["profile_path"])
+
+    if not headless:
+        try:
+            open_profile_browser(profile)
+        except Exception as exc:
+            message = str(exc)
+            code = (
+                "profile_in_use"
+                if "연결기 없이 이미 열려" in message
+                else "profile_connector_failed"
+            )
+            raise UploadError(
+                f"Could not retain the Chrome profile window: {message[:300]}",
+                code=code,
+            ) from exc
 
     try:
         attached = connect_profile_context(playwright, profile_path)
@@ -1501,6 +1655,12 @@ def _open_profile_context(
         # upload.  Dropping it can tear down the connection while a long Mato
         # typing/table sequence is still running, which closes the target.
         return context, False, browser
+
+    if not headless:
+        raise UploadError(
+            "The retained Chrome profile opened, but its connector was not available.",
+            code="profile_connector_failed",
+        )
     return _launch_context(playwright, profile_path, headless=headless), True, None
 
 
@@ -1561,9 +1721,11 @@ def execute_upload(
     uploads_state = run.get("uploads")
     prior_mode = str(uploads_state.get("mode") or "") if isinstance(uploads_state, Mapping) else ""
     entries = _existing_upload_entries(run) if prior_mode == mode else []
-    by_key = {_entry_key(item, mode): item for item in entries if all(
-        key in item for key in ("file", "file_sha256", "profile_slot")
-    )}
+    by_key = {
+        _entry_key(item, mode): item
+        for item in entries
+        if all(key in item for key in ("file", "file_sha256", "profile_slot"))
+    }
     uncertain = [item for item in by_key.values() if item.get("status") == "uncertain"]
     if uncertain:
         raise ValueError("a prior upload is unverified; inspect Naver manually before retrying")
@@ -1597,7 +1759,7 @@ def execute_upload(
                     )
                 context, owns_context, connector_browser = _open_profile_context(
                     playwright,
-                    str(profile["profile_path"]),
+                    profile,
                     headless=headless,
                 )
                 try:
@@ -1605,7 +1767,11 @@ def execute_upload(
                     # a reused connector for the whole profile assignment.
                     _ = connector_browser
                     page = context.pages[0] if context.pages else context.new_page()
-                    uploader = NaverTextUploader(page, login_timeout_seconds=login_timeout)
+                    uploader = NaverTextUploader(
+                        page,
+                        login_timeout_seconds=login_timeout,
+                        link_card_wait_ms=_link_card_wait_ms(run),
+                    )
                     for position, row in enumerate(profile_rows):
                         key = _entry_key(row, mode)
                         previous = by_key.get(key)
@@ -1616,6 +1782,10 @@ def execute_upload(
                             raise ValueError(
                                 f"post {row['index']} changed after confirmation; stop and validate again"
                             )
+                        # Re-check every bound image immediately before opening
+                        # the editor.  This closes the gap between upload-plan
+                        # creation and the actual file chooser actions.
+                        verify_validation_manifest(directory, load_run(directory))
                         parsed = parse_mato_text(post_path.read_text(encoding="utf-8-sig"))
                         entry = {
                             "key": key,
@@ -1623,6 +1793,7 @@ def execute_upload(
                             "title": row["title"],
                             "file": row["file"],
                             "file_sha256": row["file_sha256"],
+                            "asset_manifest_sha256": row.get("asset_manifest_sha256", ""),
                             "profile_slot": int(slot),
                             "mode": mode,
                             "started_at": now_iso(),

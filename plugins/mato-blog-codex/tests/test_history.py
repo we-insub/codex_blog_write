@@ -189,6 +189,82 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("created", contents)
         self.assertNotIn("do-not-store", contents)
 
+    def test_product_run_preserves_optional_request_fields_without_url_keyword(self) -> None:
+        run_dir = self.env.root / "product-run"
+        request_fields = {
+            "source_type": "myrealtrip_product",
+            "channel": "naver",
+            "product_url": "https://myrealt.rip/iZRp3d",
+            "main_keyword": "",
+            "subkeywords": ["아이랑", "부모님이랑"],
+            "hook": "솔직후기",
+            "companions": ["시부모", "아이 둘"],
+            "experience_notes": ["이동 동선이 편했음"],
+            "image_policy": {
+                "mode": "all_unique_seller_product_images",
+                "permission_confirmed": True,
+                "max_images": 80,
+            },
+        }
+        _directory, state = history.create_run(
+            "https://myrealt.rip/iZRp3d",
+            "product",
+            1,
+            "상품 글 작성",
+            run_dir=run_dir,
+            request_fields=request_fields,
+        )
+        request = state["request"]
+        self.assertEqual(request["source_type"], "myrealtrip_product")
+        self.assertEqual(request["channel"], "naver")
+        self.assertEqual(request["keyword"], "")
+        self.assertEqual(request["main_keyword"], "")
+        self.assertEqual(request["product_url"], "https://myrealt.rip/iZRp3d")
+        self.assertEqual(request["subkeywords"], ["아이랑", "부모님이랑"])
+        self.assertEqual(request["companions"], ["시부모", "아이 둘"])
+        self.assertEqual(request["experience_notes"], ["이동 동선이 편했음"])
+        self.assertEqual(request["image_policy"]["max_images"], 80)
+        self.assertEqual(request["link_wait_ms"], 2_000)
+        self.assertEqual(state["input"], request)
+
+    def test_product_run_defaults_permission_to_false_and_validates_v1_contract(self) -> None:
+        base = {
+            "source_type": "myrealtrip_product",
+            "channel": "naver",
+            "product_url": "https://experiences.myrealtrip.com/products/3510284",
+            "main_keyword": "나트랑 투어",
+        }
+        _directory, state = history.create_run(
+            "나트랑 투어",
+            "integrated",
+            1,
+            "상품 글",
+            run_dir=self.env.root / "product-defaults",
+            request_fields=base,
+        )
+        self.assertEqual(state["request"]["surface"], "product")
+        self.assertFalse(state["request"]["image_policy"]["permission_confirmed"])
+        self.assertEqual(state["request"]["image_policy"]["max_images"], 80)
+
+        for field_updates in (
+            {"channel": "google"},
+            {"product_url": "https://example.com/products/3510284"},
+            {"image_policy": {"max_images": 0}},
+            {"image_policy": {"max_images": 81}},
+        ):
+            with self.subTest(field_updates=field_updates):
+                invalid = dict(base)
+                invalid.update(field_updates)
+                with self.assertRaises(ValueError):
+                    history.create_run(
+                        "나트랑 투어",
+                        "product",
+                        1,
+                        "상품 글",
+                        run_dir=self.env.root / f"invalid-{len(field_updates)}-{field_updates!s}",
+                        request_fields=invalid,
+                    )
+
     def test_append_event_is_append_only_and_sanitizes_run_updates(self) -> None:
         run_dir = self.env.root / "append-run"
         history.create_run("키워드", "integrated", 1, "첫 명령", run_dir=run_dir)

@@ -67,23 +67,45 @@ def status_prompt(prompt_key: str = "공통") -> dict[str, Any]:
     }
 
 
-def export_prompt(output: str | Path, prompt_key: str = "공통") -> dict[str, Any]:
+def export_prompt(
+    output: str | Path,
+    prompt_key: str = "공통",
+    *,
+    overlay: str | Path | None = None,
+) -> dict[str, Any]:
+    """Export the managed prompt with an optional run-scoped overlay.
+
+    The overlay is read-only input.  It is appended to the exported staging
+    file and never written back to the user's persistent ``공통.txt``.
+    """
+
     managed = init_prompt(prompt_key)
     body = Path(str(managed["path"])).read_text(encoding="utf-8-sig").rstrip()
     today = dt.date.today()
     context = (
-        f"# 현재 날짜\n오늘: {today:%Y-%m-%d}\n"
+        f"# 현재 날짜\n오늘: {today:%Y-%m-%d}\n\n"
         "날짜가 자료에 없으면 날짜를 꾸며내지 않습니다.\n\n"
     )
     destination = Path(output).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     effective = context + body + "\n"
+    overlay_path = ""
+    if overlay:
+        source = Path(overlay).expanduser().resolve()
+        if not source.is_file() or source.is_symlink():
+            raise ValueError(f"prompt overlay is missing or unsafe: {source}")
+        overlay_body = source.read_text(encoding="utf-8-sig").strip()
+        if not overlay_body:
+            raise ValueError("prompt overlay must not be empty")
+        effective += "\n# 작업별 오버레이\n" + overlay_body + "\n"
+        overlay_path = str(source)
     destination.write_text(effective, encoding="utf-8", newline="\n")
     return {
         "ok": True,
         "prompt_key": prompt_key or "공통",
         "managed_prompt": managed["path"],
         "output": str(destination),
+        "overlay": overlay_path,
         "sha256": _sha(effective),
         "character_count": len(effective),
     }
@@ -98,13 +120,14 @@ def main() -> int:
     export = commands.add_parser("export")
     export.add_argument("--prompt-key", default="공통")
     export.add_argument("--output", required=True)
+    export.add_argument("--overlay")
     args = parser.parse_args()
     if args.command == "init":
         result = init_prompt(args.prompt_key)
     elif args.command == "status":
         result = status_prompt(args.prompt_key)
     else:
-        result = export_prompt(args.output, args.prompt_key)
+        result = export_prompt(args.output, args.prompt_key, overlay=args.overlay)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
