@@ -701,6 +701,7 @@ def render_overlay(brief: Mapping[str, Any]) -> str:
         "- review_summary는 '표본 후기에서 반복된 경향'으로만 설명하고 사용자 체험으로 바꾸거나 후기를 인용하지 않습니다. 후기 문장은 posts[0].review_claims에 전체 문장, theme, mentions를 적습니다.\n"
         "- 장점을 중심으로 쓰되 추가금, 불포함, 안전, 취소 조건은 예약 전 체크에서 빠뜨리지 않습니다.\n"
         "- sections는 section_contract 순서의 4개 역할을 만들고 각 section 객체에 role을 그대로 넣으며 minimum_paragraphs 이상 작성합니다.\n"
+        "- 후처리기는 이미지를 최대 2장씩 먼저 넣고 바로 다음 줄에 그 사진과 연결된 실제 본문 문단을 둡니다. 따라서 이미지 뒤에 소제목·URL·표·빈 문단을 두지 말고, 각 이미지 묶음 뒤에 독자가 읽을 자연스러운 경험 문단이 충분히 오도록 작성합니다.\n"
         "- posts[0].fact_claims에 각 필수 상품 필드, 본문에 실제로 쓴 문장, 근거값, section role을 기록합니다.\n"
         "- 이미지 태그와 URL은 직접 쓰지 않습니다. 후처리기가 확정 위치에 삽입합니다.\n\n"
         f"PRODUCT_WRITING_BRIEF_JSON\n{compact}\n"

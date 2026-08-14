@@ -348,10 +348,42 @@ class UploadPlanTests(unittest.TestCase):
         frame.locator.return_value = components
         with patch.object(upload, "_find_visible", return_value=MagicMock()), patch.object(
             uploader, "_editor_frame", return_value=frame
-        ), patch.object(upload.time, "monotonic", side_effect=[0.0, 31.0]):
+        ), patch.object(upload.time, "monotonic", side_effect=[0.0, 61.0]):
             with self.assertRaises(upload.UploadError) as raised:
                 uploader._upload_image(image_path)
         self.assertEqual(raised.exception.code, "image_upload_failed")
+
+    def test_image_preflight_rejects_missing_empty_and_non_image_assets(self) -> None:
+        for name, content in (("empty.jpg", b""), ("not-image.jpg", b"plain text")):
+            with self.subTest(name=name):
+                path = self.env.root / name
+                path.write_bytes(content)
+                with self.assertRaises(upload.UploadError) as raised:
+                    upload._preflight_image_assets([f"[{name}]"], self.env.root)
+                self.assertEqual(raised.exception.code, "image_upload_failed")
+        with self.assertRaises(upload.UploadError) as raised:
+            upload._preflight_image_assets(["[missing.jpg]"], self.env.root)
+        self.assertEqual(raised.exception.code, "image_upload_failed")
+
+    def test_image_group_creates_one_text_block_after_last_image_only(self) -> None:
+        page = MagicMock()
+        uploader = upload.NaverTextUploader(page)
+        frame = MagicMock()
+        placeholder = MagicMock()
+        for index in (1, 2):
+            (self.env.root / f"image_{index}.jpg").write_bytes(b"\xff\xd8\xffimage")
+        with patch.object(uploader, "_exact_text", return_value=placeholder), patch.object(
+            uploader, "_clear_region_placeholder"
+        ), patch.object(uploader, "_upload_image"), patch.object(
+            uploader, "_create_text_block_after_image"
+        ) as create_text_block:
+            uploader._process_lines(
+                frame,
+                ["[image_1.jpg]", "[image_2.jpg]", "사진 뒤 본문 문장입니다."],
+                upload.NAVER_BODY_PLACEHOLDER,
+                self.env.root,
+            )
+        create_text_block.assert_called_once_with()
 
     def test_process_lines_waits_two_seconds_after_each_product_url(self) -> None:
         page = MagicMock()

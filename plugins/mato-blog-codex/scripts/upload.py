@@ -77,7 +77,7 @@ TABLE_SELECT_DELAY_MS = 2_500
 TABLE_DELETE_DELAY_MS = 2_500
 DEFAULT_LINK_CARD_WAIT_MS = 4_000
 PRODUCT_LINK_CARD_WAIT_MS = 2_000
-IMAGE_UPLOAD_TIMEOUT_MS = 30_000
+IMAGE_UPLOAD_TIMEOUT_MS = 60_000
 EDITOR_IMAGE_COMPONENT_SELECTOR = (
     ".se-component.se-image, .se-component[data-module='image']"
 )
@@ -235,6 +235,54 @@ def _resolve_image_path(asset_dir: Path, image_name: str) -> Path | None:
     except OSError:
         return None
     return None
+
+
+def _is_readable_image_file(path: Path) -> bool:
+    """Cheap preflight that catches broken downloads before opening Naver editor."""
+
+    try:
+        if not path.is_file() or path.stat().st_size <= 0:
+            return False
+        signature = path.read_bytes()[:16]
+    except OSError:
+        return False
+    return (
+        signature.startswith(b"\xff\xd8\xff")
+        or signature.startswith(b"\x89PNG\r\n\x1a\n")
+        or signature.startswith((b"GIF87a", b"GIF89a"))
+        or (signature.startswith(b"RIFF") and signature[8:12] == b"WEBP")
+    )
+
+
+def _preflight_image_assets(lines: Sequence[str], asset_dir: Path) -> None:
+    """Fail before editor mutation when any referenced local image is unusable."""
+
+    checked: set[Path] = set()
+    for raw_line in lines:
+        match = IMAGE_TAG_RE.fullmatch(str(raw_line).strip())
+        if match is None:
+            continue
+        name = match.group(1)
+        path = _resolve_image_path(asset_dir, name)
+        if path is None:
+            raise UploadError(f"Referenced image is missing: {name}", code="image_upload_failed")
+        resolved = path.resolve()
+        if resolved in checked:
+            continue
+        checked.add(resolved)
+        if not _is_readable_image_file(path):
+            raise UploadError(
+                f"Referenced image is empty or not a supported image file: {name}",
+                code="image_upload_failed",
+            )
+
+
+def _next_nonempty_instruction(lines: Sequence[str], start_index: int) -> str:
+    for raw_line in lines[start_index:]:
+        value = str(raw_line).strip()
+        if value:
+            return value
+    return ""
 
 
 def _is_repeated_separator(value: str) -> bool:
@@ -859,6 +907,14 @@ class NaverTextUploader:
                 f"Could not upload image: {image_path.name}", code="image_upload_failed"
             ) from exc
 
+    def _create_text_block_after_image(self) -> None:
+        """Keep the next prose/editor action below, not inside or before, an image."""
+
+        self.page.keyboard.press("ArrowDown")
+        self.page.wait_for_timeout(150)
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_timeout(250)
+
     @staticmethod
     def _replace_line(locator: Any, value: str, *, delay: int, backspace: bool) -> None:
         locator.click(timeout=5_000)
@@ -1203,7 +1259,7 @@ class NaverTextUploader:
 
         first_text = ""
         table_state: dict[str, Any] | None = None
-        for raw_line in lines:
+        for line_index, raw_line in enumerate(lines):
             line = str(raw_line).strip()
             if table_state is None:
                 table_start = TABLE_START_RE.match(line)
@@ -1260,6 +1316,9 @@ class NaverTextUploader:
                         code="image_upload_failed",
                     )
                 self._upload_image(image_path)
+                next_instruction = _next_nonempty_instruction(lines, line_index + 1)
+                if next_instruction and not IMAGE_TAG_RE.fullmatch(next_instruction):
+                    self._create_text_block_after_image()
                 continue
 
             if line.casefold().startswith(("http://", "https://")):
@@ -1287,6 +1346,10 @@ class NaverTextUploader:
         return first_text
 
     def write(self, title: str, parsed: Mapping[str, Any], asset_dir: Path) -> None:
+        sections = _editor_sections(parsed)
+        _preflight_image_assets(
+            [line for _placeholder, lines in sections for line in lines], asset_dir
+        )
         frame, title_box, template_found = self.open_editor_fields
         clean_title = self._clean_title(title)
         self._replace_line(
@@ -1303,7 +1366,6 @@ class NaverTextUploader:
                 backspace=True,
             )
         first_text = ""
-        sections = _editor_sections(parsed)
         if template_found:
             for placeholder, lines in sections:
                 typed = self._process_lines(frame, lines, placeholder, asset_dir)

@@ -28,6 +28,10 @@ HEADING_PREFIX = "ㅂㅂㅂ"
 HEADING_PREFIXES = (HEADING_PREFIX, "소제목")
 IMAGE_TAG_RE = re.compile(r"\[(image_([1-9]\d*)\.jpg)\]", re.IGNORECASE)
 PRODUCT_IMAGE_RE = re.compile(r"image_([1-9]\d*)\.jpg", re.IGNORECASE)
+PRODUCT_IMAGE_LINE_RE = re.compile(r"\[image_[1-9]\d*\.jpg\]", re.IGNORECASE)
+TABLE_START_RE = re.compile(r"^표\s+\d+\s*[xX×]\s*\d+\s+시작$")
+TABLE_CELL_RE = re.compile(r"^\(\d+\s*,\s*\d+\)\s*.+$")
+TABLE_END_RE = re.compile(r"^표\s+\d+\s*[xX×]\s*\d+\s+끝$")
 REVIEW_VALUE_RE = re.compile(
     r"(?:^|[/\\?&=_.\-\s])(reviews?|reviewphotos?|reviewimages?|후기사진|후기)"
     r"(?=$|[/\\?&=_.\-\s])",
@@ -54,6 +58,17 @@ REQUIRED_PRODUCT_SECTION_IDS = frozenset(
 EXPANDABLE_PRODUCT_SECTION_IDS = frozenset(
     {"INTRODUCTION", "ITINERARIES", "ESSENTIALS", "REVIEW"}
 )
+
+
+def _is_product_prose_line(line: str, *, link_url: str) -> bool:
+    value = str(line or "").strip()
+    if not value or value == link_url or PRODUCT_IMAGE_LINE_RE.fullmatch(value):
+        return False
+    if value.startswith(("ㅂㅂㅂ", "소제목", "!!", "http://", "https://")):
+        return False
+    if TABLE_START_RE.fullmatch(value) or TABLE_CELL_RE.fullmatch(value) or TABLE_END_RE.fullmatch(value):
+        return False
+    return bool(re.search(r"[가-힣A-Za-z]", value))
 
 
 def parse_mato_text(text: str) -> dict[str, Any]:
@@ -941,16 +956,12 @@ def validate_run(run_dir: str | Path, expected: int, *, threshold: float = 0.78)
                         if line_index + 1 < len(meaningful_body2)
                         else ""
                     )
-                    if not re.fullmatch(
-                        r"\[image_[1-9]\d*\.jpg\]", next_line, re.IGNORECASE
-                    ) and (
-                        not next_line
-                        or next_line == link_url
-                        or next_line.startswith("ㅂㅂㅂ")
+                    if not PRODUCT_IMAGE_LINE_RE.fullmatch(next_line) and not _is_product_prose_line(
+                        next_line, link_url=link_url
                     ):
                         errors.append(
-                            f"{path.name}: a product image group must be followed by "
-                            "non-image text"
+                            f"{path.name}: a product image group must be followed immediately "
+                            "by a prose paragraph"
                         )
                 else:
                     consecutive_images = 0

@@ -494,7 +494,7 @@ class WritePostsTests(unittest.TestCase):
                             "after_paragraph": 1,
                         }
                     )
-                    expected_error = "must be followed by non-image text"
+                    expected_error = "must be followed immediately by a prose paragraph"
                 source = self.env.root / f"{case}.json"
                 write_json(source, payload)
                 with self.assertRaisesRegex(ValueError, expected_error):

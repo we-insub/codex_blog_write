@@ -52,6 +52,9 @@ def _string_list(value: object, *, field: str) -> list[str]:
 
 PRODUCT_IMAGE_RE = re.compile(r"image_([1-9]\d*)\.jpg", re.IGNORECASE)
 PRODUCT_IMAGE_LINE_RE = re.compile(r"\[image_([1-9]\d*)\.jpg\]", re.IGNORECASE)
+TABLE_START_RE = re.compile(r"^표\s+\d+\s*[xX×]\s*\d+\s+시작$")
+TABLE_CELL_RE = re.compile(r"^\(\d+\s*,\s*\d+\)\s*.+$")
+TABLE_END_RE = re.compile(r"^표\s+\d+\s*[xX×]\s*\d+\s+끝$")
 PRODUCT_LINK_HOSTS = {
     "myrealt.rip",
     "myrealtrip.com",
@@ -222,6 +225,24 @@ def _region_lines(
     return lines
 
 
+def _is_product_prose_line(line: str, *, link_url: str) -> bool:
+    """Return true only for a real reader-facing paragraph after an image group.
+
+    Product images must never spill into a heading, URL card, table instruction,
+    or another editor component.  Keeping this deliberately narrow makes the
+    rendered Mato instructions match the visible ``image → prose`` rhythm.
+    """
+
+    value = str(line or "").strip()
+    if not value or value == link_url or PRODUCT_IMAGE_LINE_RE.fullmatch(value):
+        return False
+    if value.startswith(("ㅂㅂㅂ", "소제목", "!!", "http://", "https://")):
+        return False
+    if TABLE_START_RE.fullmatch(value) or TABLE_CELL_RE.fullmatch(value) or TABLE_END_RE.fullmatch(value):
+        return False
+    return bool(re.search(r"[가-힣A-Za-z]", value))
+
+
 def _validate_product_image_layout(body: str, *, link_url: str) -> None:
     meaningful = [line.strip() for line in body.splitlines() if line.strip()]
     consecutive = 0
@@ -231,10 +252,12 @@ def _validate_product_image_layout(body: str, *, link_url: str) -> None:
             if consecutive > 2:
                 raise ValueError("product image layout allows at most two consecutive tags")
             next_line = meaningful[index + 1] if index + 1 < len(meaningful) else ""
-            if not PRODUCT_IMAGE_LINE_RE.fullmatch(next_line) and (
-                not next_line or next_line == link_url or next_line.startswith("ㅂㅂㅂ")
+            if not PRODUCT_IMAGE_LINE_RE.fullmatch(next_line) and not _is_product_prose_line(
+                next_line, link_url=link_url
             ):
-                raise ValueError("a product image group must be followed by non-image text")
+                raise ValueError(
+                    "a product image group must be followed immediately by a prose paragraph"
+                )
         else:
             consecutive = 0
     if link_url and (not meaningful or meaningful[-1] != link_url):
