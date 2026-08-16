@@ -1885,7 +1885,13 @@ def execute_upload(
                     # The local name intentionally keeps a live reference to
                     # a reused connector for the whole profile assignment.
                     _ = connector_browser
-                    page = context.pages[0] if context.pages else context.new_page()
+                    # The retained profile host opens the configured write URL
+                    # while its connector is coming up.  Reusing that page can
+                    # race its initial navigation (and its native draft alert)
+                    # with the uploader's own navigation.  A dedicated tab
+                    # keeps the draft workflow independent and preserves the
+                    # visible profile window for the user.
+                    page = context.new_page()
                     uploader = NaverTextUploader(
                         page,
                         login_timeout_seconds=login_timeout,

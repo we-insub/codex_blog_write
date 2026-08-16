@@ -135,7 +135,7 @@ def _is_naver_shopping_product_url(value: str) -> bool:
     if host == "naver.me":
         return bool(re.fullmatch(r"/[A-Za-z0-9_-]{4,64}", path) and not parsed.query)
     return bool(
-        host == "brand.naver.com"
+        host in {"brand.naver.com", "smartstore.naver.com"}
         and re.fullmatch(r"/[^/]+/products/[1-9][0-9]*", path)
     )
 

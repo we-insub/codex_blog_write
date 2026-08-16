@@ -59,7 +59,7 @@ Read [workflow-contract.md](references/workflow-contract.md) for CLI/data contra
 
 ## Execute a Naver Shopping product run
 
-1. A `https://naver.me/<code>` or `https://brand.naver.com/<store>/products/<id>` URL selects this branch. Keep the exact entered URL in `product_url`; the Brand Store redirect is recorded separately as the canonical product URL. Create one run with `history.create_run(..., request_fields=<parsed request>)`.
+1. A `https://naver.me/<code>`, `https://brand.naver.com/<store>/products/<id>`, or `https://smartstore.naver.com/<store>/products/<id>` URL selects this branch. Keep the exact entered URL in `product_url`; the Brand Store or SmartStore redirect is recorded separately as the canonical product URL. Create one run with `history.create_run(..., request_fields=<parsed request>)`.
 2. Use the in-app Browser on the supplied URL. Let Naver complete its normal redirect to the Brand Store product page. Collect the fully rendered product HTML only after all product-gallery slides are visible. Do not use a fetched substitute HTML page.
 3. Click the visible `리뷰 N` tab, then click `더 보기` on review cards until at least five expanded text reviews are available. Save this review-tab HTML separately. Review text is writing reference only; never download review, buyer, profile, checkout, or video-thumbnail images.
 4. Create managed staging input with `product_url`, canonical `canonical_url`, `product_html`, `review_html`, and `collection_proof`. The proof must state `document_ready_state: complete`, the canonical `page_url`, `review_tab_opened: true`, `review_more_expanded: true`, the exact seller gallery count, and two equal stable image counts.

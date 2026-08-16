@@ -147,7 +147,7 @@ Run `product_writing.py finalize`, then `write_posts.py`, `prepare_image_dataset
 
 ## Naver Shopping product contract
 
-`https://naver.me/<code>` and `https://brand.naver.com/<store>/products/<id>` select `source_type: naver_shopping_product`. It has the same Naver-only one-post and `image_policy` contract as the MyRealTrip product path, but the source proof is different: product and review tab DOM are separate Browser captures, the review tab has at least five expanded text reviews, and the proof records the stable product-gallery count.
+`https://naver.me/<code>`, `https://brand.naver.com/<store>/products/<id>`, and `https://smartstore.naver.com/<store>/products/<id>` select `source_type: naver_shopping_product`. It has the same Naver-only one-post and `image_policy` contract as the MyRealTrip product path, but the source proof is different: product and review tab DOM are separate Browser captures, the review tab has at least five expanded text reviews, and the proof records the stable product-gallery count.
 
 The collector accepts only direct product-gallery `<img>` nodes served from `shop-phinf.pstatic.net`. It normalizes every selected source to `https://shop-phinf.pstatic.net/<original path>` with no query string, so a thumbnail such as `?type=f40` is downloaded as its seller original rather than the 40-pixel derivative. It uses contiguous `image_N.jpg` prepared files and manifest kind `naver_shopping_product_images`. It always rejects `phinf.pstatic.net`, `checkout.phinf.pstatic.net`, `profile-phinf.pstatic.net`, video thumbnails, review attachments, and UI assets.
 

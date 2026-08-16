@@ -747,7 +747,7 @@ def build_product_writing_brief(
         for role in IMAGE_ROLE_TO_SECTION
     }
     minimum_paragraphs = {
-        IMAGE_ROLE_TO_SECTION[role]: max(1, math.ceil(count / 2))
+        IMAGE_ROLE_TO_SECTION[role]: max(1, math.ceil(count / 2) + 1)
         for role, count in remaining_role_counts.items()
     }
     minimum_paragraphs["booking_checks"] = 1
@@ -835,7 +835,7 @@ def render_overlay(brief: Mapping[str, Any]) -> str:
         "- 각 소제목에는 상품의 확인된 구성·사용 포인트 또는 후기에서 확인한 구체적 포인트를 연결합니다. 누구에게나 통하는 추상적인 조언만 쓰지 않습니다.\n"
         "- 확인되지 않은 추가금, 불포함, 안전, 취소 조건은 만들어 쓰지 않습니다.\n"
         "- sections는 section_contract 순서의 4개 역할을 만들고 각 section 객체에 role을 그대로 넣으며 minimum_paragraphs 이상 작성합니다.\n"
-        "- 후처리기는 이미지를 최대 2장씩 먼저 넣고 바로 다음 줄에 그 사진과 연결된 실제 본문 문단을 둡니다. 따라서 이미지 뒤에 소제목·URL·표·빈 문단을 두지 말고, 각 이미지 묶음 뒤에 독자가 읽을 자연스러운 경험 문단이 충분히 오도록 작성합니다.\n"
+        "- 후처리기는 본문 문단 뒤에 이미지를 최대 2장씩 넣고, 바로 다음 줄에 그 사진과 연결된 본문 문단을 둡니다. 따라서 이미지 앞뒤에 소제목·URL·표·빈 문단을 두지 말고, 글→이미지→글 흐름을 지킵니다.\n"
         "- posts[0].fact_claims에 각 필수 상품 필드, 본문에 실제로 쓴 문장, 근거값, section role을 기록합니다.\n"
         "- 이미지 태그와 URL은 직접 쓰지 않습니다. 후처리기가 확정 위치에 삽입합니다.\n\n"
         f"PRODUCT_WRITING_BRIEF_JSON\n{compact}\n"
@@ -867,11 +867,11 @@ def _section_indexes(post: Mapping[str, Any]) -> tuple[dict[str, int], dict[int,
 def deterministic_image_placements(
     post: Mapping[str, Any], images: Sequence[Mapping[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Place sequential images in groups of at most two, always before text."""
+    """Place sequential image groups between reader-facing prose paragraphs."""
 
     intro = post.get("intro")
-    if not isinstance(intro, list) or not intro:
-        raise ValueError("product post requires intro text after representative images")
+    if not isinstance(intro, list) or len(intro) < 2:
+        raise ValueError("product post needs intro prose before and after representative images")
     by_role, paragraph_counts = _section_indexes(post)
     placements: list[dict[str, Any]] = []
     has_explicit_representatives = any("representative" in raw for raw in images)
@@ -890,7 +890,7 @@ def deterministic_image_placements(
                 "file": f"image_{index}.jpg",
                 "manifest_index": index,
                 "region": "intro",
-                "after_paragraph": 0,
+                "after_paragraph": 1,
             }
         )
     representative_indexes = {int(raw.get("index") or 0) for raw in representatives}
@@ -907,7 +907,9 @@ def deterministic_image_placements(
         section_role = IMAGE_ROLE_TO_SECTION[image_role]
         section_index = by_role[section_role]
         rows = grouped[image_role]
-        needed_paragraphs = math.ceil(len(rows) / 2)
+        # Each group is inserted between prose paragraphs so the editor always
+        # receives prose → image(s) → prose, never a loose image block.
+        needed_paragraphs = math.ceil(len(rows) / 2) + 1 if rows else 0
         if paragraph_counts[section_index] < needed_paragraphs:
             raise ValueError(
                 f"section {section_role} needs at least {needed_paragraphs} paragraphs "
@@ -921,7 +923,7 @@ def deterministic_image_placements(
                     "manifest_index": index,
                     "region": "section",
                     "section_index": section_index,
-                    "after_paragraph": offset // 2,
+                    "after_paragraph": (offset // 2) + 1,
                 }
             )
     indexes = [int(item["manifest_index"]) for item in placements]
@@ -1216,12 +1218,17 @@ def _fact_evidence(brief: Mapping[str, Any]) -> dict[str, list[str]]:
     if not isinstance(product, Mapping):
         raise ValueError("product writing brief has no product facts")
     if product.get("source_type") == NAVER_SHOPPING_PRODUCT_SOURCE_TYPE:
+        review_count = product.get("review_count")
+        try:
+            review_count_text = f"{int(review_count):,}"
+        except (TypeError, ValueError):
+            review_count_text = _text(review_count)
         evidence = {
             field: [value]
             for field, value in {
                 "price": _text(product.get("price_text")),
                 "rating": _text(product.get("rating")),
-                "review_count": _text(product.get("review_count")),
+                "review_count": review_count_text,
             }.items()
             if value
         }

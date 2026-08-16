@@ -33,6 +33,7 @@ MAX_IMAGES = 80
 _PRODUCT_PATH = re.compile(r"^/[^/]+/products/(?P<product_id>[1-9][0-9]*)/?$", re.I)
 _SHORT_PATH = re.compile(r"^/[A-Za-z0-9_-]{4,64}/?$")
 _PRICE_RE = re.compile(r"(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)\s*원")
+CANONICAL_PRODUCT_HOSTS = {"brand.naver.com", "smartstore.naver.com"}
 
 
 class NaverShoppingProductError(RuntimeError):
@@ -82,7 +83,7 @@ def _https_url(value: object) -> str:
 
 
 def validate_product_url(value: str) -> ProductReference:
-    """Validate a Naver short URL or a canonical Brand Store product URL."""
+    """Validate a Naver short URL or a canonical Naver Shopping product URL."""
 
     normalized = _https_url(value)
     parsed = urlsplit(normalized)
@@ -90,14 +91,14 @@ def validate_product_url(value: str) -> ProductReference:
     if host == "naver.me" and _SHORT_PATH.fullmatch(parsed.path) and not parsed.query:
         return ProductReference(normalized, None, None, "short")
     match = _PRODUCT_PATH.fullmatch(parsed.path)
-    if host == "brand.naver.com" and match:
+    if host in CANONICAL_PRODUCT_HOSTS and match:
         canonical = urlunsplit(("https", host, parsed.path.rstrip("/"), "", ""))
         return ProductReference(normalized, canonical, match.group("product_id"), "canonical")
-    raise ProductURLValidationError("네이버 쇼핑 단축 URL 또는 브랜드스토어 상품 URL이 필요합니다.")
+    raise ProductURLValidationError("네이버 쇼핑 단축 URL, 브랜드스토어 또는 스마트스토어 상품 URL이 필요합니다.")
 
 
 def resolve_product_url(value: str, *, session: Any | None = None, timeout: float = 20) -> ProductReference:
-    """Follow a user-supplied Naver short URL only to its Brand Store product."""
+    """Follow a user-supplied Naver short URL only to its Naver Shopping product."""
 
     initial = validate_product_url(value)
     if initial.canonical_url:
@@ -116,7 +117,7 @@ def resolve_product_url(value: str, *, session: Any | None = None, timeout: floa
     final_url = str(getattr(response, "url", "") or "")
     final = validate_product_url(final_url)
     if final.kind != "canonical" or not final.canonical_url:
-        raise ProductURLValidationError("단축 URL이 브랜드스토어 상품 페이지로 연결되지 않습니다.")
+        raise ProductURLValidationError("단축 URL이 네이버 쇼핑 상품 페이지로 연결되지 않습니다.")
     return ProductReference(initial.input_url, final.canonical_url, final.product_id, "short")
 
 
@@ -145,6 +146,14 @@ def _is_product_gallery_image(node: Any) -> bool:
     parent = node.find_parent(attrs={"title": "상품 이미지"})
     if parent is not None:
         return True
+
+    # SmartStore 상품 상세 상단 갤러리는 title 대신 data-shp-area를 쓴다.
+    # top image/thumbnail 영역만 허용해 리뷰·추천·UI 이미지가 섞이지 않게 한다.
+    for ancestor in node.parents:
+        area = _text(ancestor.attrs.get("data-shp-area", ""))
+        if area.startswith(("topi.", "topithumb.")):
+            return True
+
     alt = _text(node.get("alt"))
     return bool(re.fullmatch(r"(?:대표이미지|추가이미지\d+)", alt))
 
@@ -198,7 +207,7 @@ def _title_from_soup(soup: Any) -> str:
             if node is not None and _text(node.get_text(" ", strip=True)):
                 title = _text(node.get_text(" ", strip=True))
                 break
-    title = re.sub(r"\s*[-|]\s*네이버\s*(?:쇼핑|브랜드스토어).*$", "", title).strip()
+    title = re.sub(r"\s*[-|]\s*네이버\s*(?:쇼핑|브랜드스토어|스마트스토어).*$", "", title).strip()
     if not title:
         raise ProductParseError("상품명을 렌더링 HTML에서 찾지 못했습니다.")
     return title
@@ -242,6 +251,19 @@ def parse_reviews(review_html: str, *, limit: int = 5) -> list[dict[str, Any]]:
         rows.append({"text": text, "tags": tags})
         if len(rows) == limit:
             break
+
+    # 일반 SmartStore 상품의 리뷰 카드 클래스는 브랜드스토어와 다르다.
+    # 전용 data-shp-area로 식별해 본문이나 추천 상품의 문장을 리뷰로
+    # 잘못 읽지 않는다.
+    if len(rows) < min(limit, 5):
+        for node in soup.select('[data-shp-area="sprvarevlist_l.review"], [data-shp-area="sprvsub.topreview"]'):
+            text = _text(node.get_text(" ", strip=True))
+            if len(text) < 20 or text in seen:
+                continue
+            seen.add(text)
+            rows.append({"text": text, "tags": []})
+            if len(rows) == limit:
+                break
     if len(rows) < min(limit, 5):
         raise ProductParseError("리뷰 탭에서 확장된 텍스트 후기 5개를 찾지 못했습니다.")
     return rows
@@ -259,13 +281,17 @@ def parse_product_html(
         raise ProductParseError(f"BeautifulSoup을 불러오지 못했습니다: {exc}") from exc
     reference = validate_product_url(canonical_url)
     if not reference.canonical_url or not reference.product_id:
-        raise ProductParseError("정규 브랜드스토어 상품 URL이 필요합니다.")
+        raise ProductParseError("정규 네이버 쇼핑 상품 URL이 필요합니다.")
     soup = BeautifulSoup(product_html, "html.parser")
     title = _title_from_soup(soup)
     price_text, price_krw = _price_from_soup(soup)
     review_soup = BeautifulSoup(review_html, "html.parser")
-    review_count_match = re.search(r"리뷰\s*([\d,]+)", _text(review_soup.get_text(" ", strip=True)))
-    rating_match = re.search(r"총\s*5점\s*중\s*([0-5](?:\.\d+)?)", _text(review_soup.get_text(" ", strip=True)))
+    review_text = _text(review_soup.get_text(" ", strip=True))
+    review_count_match = re.search(r"리뷰\s*([\d,]+)|([\d,]+)\s*건\s*리뷰", review_text)
+    rating_match = re.search(
+        r"(?:총\s*5점\s*중\s*)?([0-5](?:\.\d+)?)(?:\s*\(\s*최근|\s*점)",
+        review_text,
+    )
     return {
         "source_type": "naver_shopping_product",
         "product_id": reference.product_id,
@@ -274,7 +300,11 @@ def parse_product_html(
         "price_text": price_text,
         "price_krw": price_krw,
         "rating": float(rating_match.group(1)) if rating_match else None,
-        "review_count": int(review_count_match.group(1).replace(",", "")) if review_count_match else None,
+        "review_count": (
+            int(next(value for value in review_count_match.groups() if value).replace(",", ""))
+            if review_count_match
+            else None
+        ),
         "reviews": parse_reviews(review_html),
     }
 
@@ -349,7 +379,7 @@ def build_product_bundle(
     requested = validate_product_url(product_url)
     canonical = validate_product_url(canonical_url)
     if not canonical.canonical_url or not canonical.product_id:
-        raise ProductParseError("정규 브랜드스토어 상품 URL이 필요합니다.")
+        raise ProductParseError("정규 네이버 쇼핑 상품 URL이 필요합니다.")
     if requested.kind == "canonical" and requested.canonical_url != canonical.canonical_url:
         raise ProductParseError("요청 URL과 브라우저 상품 URL이 다릅니다.")
     images = extract_seller_images(product_html)

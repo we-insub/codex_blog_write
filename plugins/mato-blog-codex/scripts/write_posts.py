@@ -62,6 +62,7 @@ PRODUCT_LINK_HOSTS = {
     "experiences.myrealtrip.com",
     "naver.me",
     "brand.naver.com",
+    "smartstore.naver.com",
 }
 PRODUCT_SOURCE_TYPES = {"myrealtrip_product", "naver_shopping_product"}
 

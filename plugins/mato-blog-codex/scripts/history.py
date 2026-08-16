@@ -130,7 +130,7 @@ def _valid_product_url(value: str, *, source_type: str) -> bool:
     if source_type == NAVER_SHOPPING_PRODUCT_SOURCE_TYPE:
         return bool(
             (host == "naver.me" and re.fullmatch(r"/[A-Za-z0-9_-]{4,64}/?", parsed.path) and not parsed.query)
-            or (host == "brand.naver.com" and re.fullmatch(r"/[^/]+/products/[1-9][0-9]*/?", parsed.path))
+            or (host in {"brand.naver.com", "smartstore.naver.com"} and re.fullmatch(r"/[^/]+/products/[1-9][0-9]*/?", parsed.path))
         )
     if host == "experiences.myrealtrip.com":
         return bool(re.fullmatch(r"/products/[1-9][0-9]*/?", parsed.path))

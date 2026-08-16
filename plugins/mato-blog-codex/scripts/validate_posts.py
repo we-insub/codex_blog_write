@@ -307,7 +307,7 @@ def _load_naver_shopping_manifest(
         or declared_count > 80
         or not re.fullmatch(r"[1-9][0-9]*", product_id)
         or canonical_parts.scheme.lower() != "https"
-        or (canonical_parts.hostname or "").lower() != "brand.naver.com"
+        or (canonical_parts.hostname or "").lower() not in {"brand.naver.com", "smartstore.naver.com"}
         or not re.fullmatch(rf"/[^/]+/products/{product_id}", canonical_parts.path.rstrip("/"))
         or not isinstance(policy, Mapping)
         or policy.get("seller_only") is not True
@@ -718,7 +718,7 @@ def _product_link_url(record: Mapping[str, Any], request: Mapping[str, Any] | No
         or parsed.username
         or parsed.password
         or (
-            host not in {"myrealt.rip", "myrealtrip.com", "www.myrealtrip.com", "naver.me", "brand.naver.com"}
+            host not in {"myrealt.rip", "myrealtrip.com", "www.myrealtrip.com", "naver.me", "brand.naver.com", "smartstore.naver.com"}
             and not host.endswith(".myrealtrip.com")
         )
     ):
