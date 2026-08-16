@@ -41,6 +41,8 @@
 
 Use plain text, not Markdown. Include at least three non-empty `ㅂㅂㅂ` headings. When the user explicitly requests local image drafts, use only sequential `[image_1.jpg]` tags and require a matching JPEG file beside the manuscript for every tag.
 
+For every uploadable manuscript, preserve a readable `글 → 이미지 → 다음 글` flow. Place an image tag only after reader-facing prose, and put its matching prose immediately after the image or consecutive image group. Do not place a heading, table block, URL card, or an empty editor region directly after an image group.
+
 ## Prohibited behavior
 
 - Do not retain competitor full text after generation.

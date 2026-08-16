@@ -285,6 +285,55 @@ def _next_nonempty_instruction(lines: Sequence[str], start_index: int) -> str:
     return ""
 
 
+def _is_reader_prose_instruction(value: str) -> bool:
+    """Return true only for a reader-facing prose line, not an editor action."""
+
+    line = str(value or "").strip()
+    if not line or IMAGE_TAG_RE.fullmatch(line):
+        return False
+    if (
+        line.startswith(("ㅂㅂㅂ", "소제목", "!!", "http://", "https://"))
+        or TABLE_START_RE.match(line)
+        or TABLE_CELL_RE.match(line)
+        or TABLE_END_RE.match(line)
+    ):
+        return False
+    return bool(re.search(r"[0-9A-Za-z가-힣]", line))
+
+
+def _validate_text_image_flow(lines: Sequence[str]) -> None:
+    """Require prose → image group → prose in every uploadable Mato body.
+
+    Naver stores text and pictures as separate editor components.  Treating an
+    image tag as a loose attachment can put the following prose above or inside
+    the image component, so every image group is required to have actual prose
+    before it and an immediate prose instruction after its final image.
+    """
+
+    meaningful = [str(value).strip() for value in lines if str(value).strip()]
+    prose_seen = False
+    for index, line in enumerate(meaningful):
+        if _is_reader_prose_instruction(line):
+            prose_seen = True
+            continue
+        if not IMAGE_TAG_RE.fullmatch(line):
+            continue
+        if not prose_seen:
+            raise UploadError(
+                "An image must follow reader-facing prose, not a heading or blank editor area.",
+                code="editor_structure_changed",
+            )
+        next_index = index + 1
+        while next_index < len(meaningful) and IMAGE_TAG_RE.fullmatch(meaningful[next_index]):
+            next_index += 1
+        next_line = meaningful[next_index] if next_index < len(meaningful) else ""
+        if not _is_reader_prose_instruction(next_line):
+            raise UploadError(
+                "Every image group must be followed immediately by its reader-facing prose.",
+                code="editor_structure_changed",
+            )
+
+
 def _is_repeated_separator(value: str) -> bool:
     return len(value) >= 3 and len(set(value)) == 1 and not value[0].isalnum()
 
@@ -909,13 +958,19 @@ class NaverTextUploader:
                 code="image_upload_failed",
             ) from exc
 
-    def _create_text_block_after_image(self) -> None:
-        """Keep the next prose/editor action below, not inside or before, an image."""
+    def _create_text_block_after_image(self, frame: Any) -> None:
+        """Move into the distinct text component directly below an image block."""
 
         self.page.keyboard.press("ArrowDown")
         self.page.wait_for_timeout(150)
         self.page.keyboard.press("Enter")
         self.page.wait_for_timeout(250)
+        text_blocks = frame.locator(".se-section-text .se-text-paragraph")
+        if int(text_blocks.count()) < 1:
+            raise UploadError(
+                "Naver did not create a text area after the image component.",
+                code="editor_structure_changed",
+            )
 
     @staticmethod
     def _replace_line(locator: Any, value: str, *, delay: int, backspace: bool) -> None:
@@ -1320,7 +1375,7 @@ class NaverTextUploader:
                 self._upload_image(image_path)
                 next_instruction = _next_nonempty_instruction(lines, line_index + 1)
                 if next_instruction and not IMAGE_TAG_RE.fullmatch(next_instruction):
-                    self._create_text_block_after_image()
+                    self._create_text_block_after_image(frame)
                 continue
 
             if line.casefold().startswith(("http://", "https://")):
@@ -1349,9 +1404,9 @@ class NaverTextUploader:
 
     def write(self, title: str, parsed: Mapping[str, Any], asset_dir: Path) -> None:
         sections = _editor_sections(parsed)
-        _preflight_image_assets(
-            [line for _placeholder, lines in sections for line in lines], asset_dir
-        )
+        all_lines = [line for _placeholder, lines in sections for line in lines]
+        _preflight_image_assets(all_lines, asset_dir)
+        _validate_text_image_flow(all_lines)
         frame, title_box, template_found = self.open_editor_fields
         clean_title = self._clean_title(title)
         self._replace_line(
