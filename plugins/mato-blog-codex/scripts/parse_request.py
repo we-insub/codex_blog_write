@@ -63,6 +63,10 @@ _PRODUCT_MAX_IMAGES = 80
 
 
 def _parse_profiles(command: str) -> list[int]:
+    # A Naver post URL ends in a numeric log number.  Strip URLs before
+    # recognizing profile slots so ``.../224360981794 + 프로필2`` can never
+    # turn the post number into a profile number.
+    command = _without_urls(str(command or ""))
     patterns = (
         r"(?P<slots>\d+(?:\s*[,/]\s*\d+)*)\s*번?\s*프로필",
         r"프로필\s*(?P<slots>\d+(?:\s*[,/]\s*\d+)*)",
@@ -388,10 +392,15 @@ def parse_request(command: str) -> dict[str, Any]:
     explicit_publish = bool(re.search(r"(?:자동\s*|바로\s*)?발행", option_text, re.IGNORECASE))
     mode = "publish" if not upload_prohibited and explicit_publish else "draft"
     versions_match = re.search(r"(?<!프로필\s)(\d+)\s*(?:개|가지|버전)", option_text)
-    versions = int(versions_match.group(1)) if versions_match else 10
+    requested_versions = int(versions_match.group(1)) if versions_match else 10
+    profiles = _parse_profiles(option_text)
+    # A profile list is an assignment request, not just an upload target.
+    # Generate one independent post per requested profile so profile 1,2,3
+    # always receives exactly three drafts, even if a different post count was
+    # also written in the compact command.
+    versions = len(profiles) if profiles else requested_versions
     if versions <= 0:
         raise ValueError("versions must be positive")
-    profiles = _parse_profiles(option_text)
     if not keyword.strip():
         raise ValueError("검색 키워드를 따옴표로 감싸서 입력하세요.")
     return {

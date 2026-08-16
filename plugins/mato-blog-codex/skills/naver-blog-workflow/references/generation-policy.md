@@ -13,6 +13,8 @@
 - Give every post a distinct title, angle, ordering, introduction, and section structure.
 - Write useful Korean informational prose. Avoid keyword stuffing and unverifiable superlatives.
 - Never claim that the user visited, purchased, ate, tested, photographed, or personally experienced something unless the user supplied that fact.
+- When the user supplies their own post URL or explicit experience notes and requests a `후기`, `실사용`, `추천`, or `사용기` title, write from the first-person experience viewpoint that matches the selected title. Paraphrase only the supplied firsthand facts; do not invent a purchase, visit, result, companion, or feeling.
+- Choose the title perspective before drafting. A firsthand-review title requires firsthand-review prose; do not turn it into a detached third-person explainer.
 - Treat collected text as internal research only. Do not mention or allude to it in a final draft with phrases such as `원문에는`, `원문에서`, `자료에 따르면`, `출처에는`, `해당 글`, or `작성자`; write a standalone reader-facing post instead.
 - Apply a stored voice profile only when it came from the user's own blog or explicit writing sample.
 - Verify unstable prices, opening hours, laws, schedules, and product details against authoritative sources before including them.

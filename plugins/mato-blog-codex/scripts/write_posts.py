@@ -339,7 +339,7 @@ def _render_mato_post_details(post: Mapping[str, Any]) -> tuple[str, str, dict[s
         for match in re.findall(r"\[(image_([1-9]\d*)\.jpg)\]", body, re.IGNORECASE)
     ]
     expected_images = [item["file"] for item in placements]
-    if rendered_images != expected_images:
+    if placements and rendered_images != expected_images:
         raise ValueError("rendered product image tags do not match deterministic placements")
     if placements:
         _validate_product_image_layout(body, link_url=link_url)
