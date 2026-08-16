@@ -58,6 +58,7 @@ REQUIRED_PRODUCT_SECTION_IDS = frozenset(
 EXPANDABLE_PRODUCT_SECTION_IDS = frozenset(
     {"INTRODUCTION", "ITINERARIES", "ESSENTIALS", "REVIEW"}
 )
+PRODUCT_SOURCE_TYPES = {"myrealtrip_product", "naver_shopping_product"}
 
 
 def _is_product_prose_line(line: str, *, link_url: str) -> bool:
@@ -278,6 +279,102 @@ def _has_review_signal(item: Mapping[str, Any]) -> bool:
     return walk(item)
 
 
+def _load_naver_shopping_manifest(
+    run_dir: Path,
+    manifest_path: Path,
+    raw_bytes: bytes,
+    payload: Mapping[str, Any],
+    request: Mapping[str, Any] | None,
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """Validate a gallery-only Naver Shopping original-image manifest."""
+
+    accepted = payload.get("accepted")
+    proof = payload.get("collection_proof")
+    policy = payload.get("image_policy")
+    try:
+        declared_count = int(payload.get("image_count") or 0)
+        candidate_count = int(payload.get("candidate_count") or 0)
+        stable = [int(value) for value in proof.get("stable_image_counts", [])]
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("Naver Shopping product image manifest counts are invalid") from exc
+    canonical = str(payload.get("canonical_url") or "")
+    canonical_parts = urlsplit(canonical)
+    product_id = str(payload.get("product_id") or "")
+    if (
+        not isinstance(accepted, list)
+        or not accepted
+        or declared_count != len(accepted)
+        or declared_count > 80
+        or not re.fullmatch(r"[1-9][0-9]*", product_id)
+        or canonical_parts.scheme.lower() != "https"
+        or (canonical_parts.hostname or "").lower() != "brand.naver.com"
+        or not re.fullmatch(rf"/[^/]+/products/{product_id}", canonical_parts.path.rstrip("/"))
+        or not isinstance(policy, Mapping)
+        or policy.get("seller_only") is not True
+        or policy.get("original_url_without_resize_query") is not True
+        or policy.get("review_images_excluded") is not True
+        or not isinstance(proof, Mapping)
+        or proof.get("review_tab_opened") is not True
+        or proof.get("review_more_expanded") is not True
+        or str(proof.get("page_url") or "").rstrip("/") != canonical.rstrip("/")
+        or stable != [candidate_count, candidate_count]
+    ):
+        raise ValueError("Naver Shopping product image manifest has incomplete source evidence")
+    if request is not None:
+        if str(request.get("source_type") or "") != "naver_shopping_product":
+            raise ValueError("Naver Shopping manifest used by another product source")
+        if str(payload.get("source_url") or "") != str(request.get("product_url") or ""):
+            raise ValueError("product image manifest source_url does not match the request")
+        request_policy = request.get("image_policy")
+        if not isinstance(request_policy, Mapping) or declared_count > int(request_policy.get("max_images") or 0):
+            raise ValueError("product image manifest exceeds request max_images")
+    normalized: list[dict[str, Any]] = []
+    for index, raw in enumerate(accepted, start=1):
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"accepted image {index} is invalid")
+        source = str(raw.get("source_url") or "")
+        parsed_source = urlsplit(source)
+        relative_file = str(raw.get("file") or "").replace("\\", "/")
+        prepared = _run_relative_file(
+            run_dir, manifest_path.parent / relative_file, label=f"accepted image {index} prepared file"
+        )
+        expected_hash = str(raw.get("sha256") or "").lower()
+        if (
+            int(raw.get("index") or 0) != index
+            or raw.get("classification") != "product"
+            or str(raw.get("source_role") or raw.get("role") or "") != "gallery"
+            or parsed_source.scheme.lower() != "https"
+            or (parsed_source.hostname or "").lower() != "shop-phinf.pstatic.net"
+            or bool(parsed_source.query)
+            or relative_file != f"prepared/image_{index}.jpg"
+            or not prepared.is_file()
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_hash)
+            or hashlib.sha256(prepared.read_bytes()).hexdigest() != expected_hash
+            or _has_review_signal(raw)
+        ):
+            raise ValueError(f"accepted image {index} is not a valid original seller gallery image")
+        width, height = _image_dimensions(prepared)
+        if width != int(raw.get("width") or 0) or height != int(raw.get("height") or 0):
+            raise ValueError(f"accepted image {index} dimensions do not match")
+        normalized.append(
+            {
+                "index": index,
+                "classification": "product",
+                "source_role": "gallery",
+                "source_url": source,
+                "file": relative_file,
+                "sha256": expected_hash,
+                "width": width,
+                "height": height,
+            }
+        )
+    return (
+        str(manifest_path.relative_to(run_dir.expanduser().resolve())),
+        hashlib.sha256(raw_bytes).hexdigest(),
+        normalized,
+    )
+
+
 def _load_product_manifest(
     run_dir: Path,
     manifest_value: object,
@@ -290,7 +387,11 @@ def _load_product_manifest(
         raise ValueError(f"product image manifest is missing: {manifest_value}")
     raw_bytes = manifest_path.read_bytes()
     payload = json.loads(raw_bytes.decode("utf-8-sig"))
-    if not isinstance(payload, Mapping) or payload.get("kind") != "myrealtrip_product_images":
+    if not isinstance(payload, Mapping):
+        raise ValueError("product image manifest has an invalid kind")
+    if payload.get("kind") == "naver_shopping_product_images":
+        return _load_naver_shopping_manifest(run_dir, manifest_path, raw_bytes, payload, request)
+    if payload.get("kind") != "myrealtrip_product_images":
         raise ValueError("product image manifest has an invalid kind")
     accepted = payload.get("accepted")
     if not isinstance(accepted, list) or not accepted:
@@ -521,9 +622,7 @@ def _generation_records_by_path(
 
 def _product_request(run: Mapping[str, Any]) -> Mapping[str, Any] | None:
     request = run.get("request")
-    if isinstance(request, Mapping) and str(request.get("source_type") or "") == (
-        "myrealtrip_product"
-    ):
+    if isinstance(request, Mapping) and str(request.get("source_type") or "") in PRODUCT_SOURCE_TYPES:
         return request
     return None
 
@@ -574,7 +673,7 @@ def _product_layout_signature(body: str, *, link_url: str) -> str:
 def _validate_product_title_plan(title: str, record: Mapping[str, Any]) -> None:
     plan = record.get("title_plan")
     if not isinstance(plan, Mapping):
-        raise ValueError("myrealtrip_product post requires a title_plan")
+        raise ValueError("product post requires a title_plan")
     if str(plan.get("channel") or "").lower() != "naver":
         raise ValueError("product title_plan channel must be naver")
     if len(title) > 40:
@@ -619,11 +718,11 @@ def _product_link_url(record: Mapping[str, Any], request: Mapping[str, Any] | No
         or parsed.username
         or parsed.password
         or (
-            host not in {"myrealt.rip", "myrealtrip.com", "www.myrealtrip.com"}
+            host not in {"myrealt.rip", "myrealtrip.com", "www.myrealtrip.com", "naver.me", "brand.naver.com"}
             and not host.endswith(".myrealtrip.com")
         )
     ):
-        raise ValueError("product link_url must be a public MyRealTrip URL")
+        raise ValueError("product link_url must be a supported public product URL")
     if request is not None and url != str(request.get("product_url") or "").strip():
         raise ValueError("product link_url must exactly match request.product_url")
     return url
@@ -805,7 +904,7 @@ def validate_run(run_dir: str | Path, expected: int, *, threshold: float = 0.78)
     product_images_forbidden = False
     if product_request is not None:
         if expected != 1:
-            errors.append("myrealtrip_product v1 requires exactly one post")
+            errors.append("product v1 requires exactly one post")
         policy = product_request.get("image_policy")
         mode = str(policy.get("mode") or "") if isinstance(policy, Mapping) else ""
         if mode == "all_unique_seller_product_images":
@@ -813,7 +912,7 @@ def validate_run(run_dir: str | Path, expected: int, *, threshold: float = 0.78)
         elif mode == "none":
             product_images_forbidden = True
         else:
-            errors.append("myrealtrip_product has an invalid image_policy mode")
+            errors.append("product run has an invalid image_policy mode")
     if len(files) != expected:
         errors.append(f"expected {expected} files, found {len(files)}")
 
@@ -890,7 +989,7 @@ def validate_run(run_dir: str | Path, expected: int, *, threshold: float = 0.78)
                 not record.get("image_manifest") or not record.get("image_placements")
             ):
                 errors.append(
-                    f"{path.name}: myrealtrip_product seller-image post requires "
+                    f"{path.name}: seller-image product post requires "
                     "image_manifest and image_placements"
                 )
             if product_images_forbidden and (

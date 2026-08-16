@@ -113,12 +113,45 @@ def _is_myrealtrip_product_url(value: str) -> bool:
     return False
 
 
+def _is_naver_shopping_product_url(value: str) -> bool:
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    path = parsed.path.rstrip("/")
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+    ):
+        return False
+    if host == "naver.me":
+        return bool(re.fullmatch(r"/[A-Za-z0-9_-]{4,64}", path) and not parsed.query)
+    return bool(
+        host == "brand.naver.com"
+        and re.fullmatch(r"/[^/]+/products/[1-9][0-9]*", path)
+    )
+
+
 def extract_product_url(command: str) -> str:
     """Return the first MyRealTrip product/short URL, without Markdown syntax."""
 
     for match in _WEB_URL_RE.finditer(str(command or "")):
         candidate = _trim_url(match.group(0))
         if _is_myrealtrip_product_url(candidate):
+            return candidate
+    return ""
+
+
+def extract_naver_shopping_product_url(command: str) -> str:
+    """Return the first supported Naver Shopping short/product URL."""
+
+    for match in _WEB_URL_RE.finditer(str(command or "")):
+        candidate = _trim_url(match.group(0))
+        if _is_naver_shopping_product_url(candidate):
             return candidate
     return ""
 
@@ -226,7 +259,12 @@ def _extract_keyword(command: str) -> str:
     return keyword
 
 
-def _parse_product_request(text: str, product_url: str) -> dict[str, Any]:
+def _parse_product_request(
+    text: str,
+    product_url: str,
+    *,
+    source_type: str = "myrealtrip_product",
+) -> dict[str, Any]:
     quoted_keyword, quoted_safe_options = _split_keyword_and_options(text)
     option_text = _without_urls(quoted_safe_options)
     fields = _extract_product_fields(text)
@@ -285,7 +323,7 @@ def _parse_product_request(text: str, product_url: str) -> dict[str, Any]:
         raise ValueError("versions must be positive")
     profiles = _parse_profiles(option_text)
     if re.search(r"(?:구글|google)", compact, re.IGNORECASE):
-        raise ValueError("마이리얼트립 상품 작성 v1은 네이버 채널만 지원합니다.")
+        raise ValueError("상품 작성 v1은 네이버 채널만 지원합니다.")
     channel = "naver"
 
     # Seller-image use is covered by the standing approval configured for this
@@ -302,7 +340,7 @@ def _parse_product_request(text: str, product_url: str) -> dict[str, Any]:
         image_mode = "none"
 
     return {
-        "source_type": "myrealtrip_product",
+        "source_type": source_type,
         "channel": channel,
         "product_url": product_url,
         # Kept for older run helpers; the URL is deliberately never used here.
@@ -336,6 +374,13 @@ def parse_request(command: str) -> dict[str, Any]:
     product_url = extract_product_url(text)
     if product_url:
         return _parse_product_request(text, product_url)
+    shopping_product_url = extract_naver_shopping_product_url(text)
+    if shopping_product_url:
+        return _parse_product_request(
+            text,
+            shopping_product_url,
+            source_type="naver_shopping_product",
+        )
     keyword, option_text = _split_keyword_and_options(text)
     compact = re.sub(r"\s+", "", option_text).lower()
     upload_prohibited = bool(_UPLOAD_PROHIBITION_RE.search(option_text))

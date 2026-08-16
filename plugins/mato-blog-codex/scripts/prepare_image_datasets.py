@@ -22,6 +22,8 @@ except ImportError:
 
 
 IMAGE_NAME_RE = re.compile(r"image_([1-9]\d*)\.jpg", re.IGNORECASE)
+PRODUCT_SOURCE_TYPES = {"myrealtrip_product", "naver_shopping_product"}
+PRODUCT_MANIFEST_KINDS = {"myrealtrip_product_images", "naver_shopping_product_images"}
 
 
 def _sha256(path: Path) -> str:
@@ -70,7 +72,7 @@ def _product_manifest_contract(
     if source != (manifest_path.parent / "prepared").resolve():
         raise ValueError("product source directory must be the manifest's prepared folder")
     payload = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-    if not isinstance(payload, Mapping) or payload.get("kind") != "myrealtrip_product_images":
+    if not isinstance(payload, Mapping) or payload.get("kind") not in PRODUCT_MANIFEST_KINDS:
         raise ValueError("product image manifest kind is invalid")
     accepted = payload.get("accepted")
     if not isinstance(accepted, list) or len(accepted) != len(images):
@@ -170,7 +172,7 @@ def prepare_post_image_datasets(
     request = state.get("request") if isinstance(state, Mapping) else None
     product_mode = bool(
         isinstance(request, Mapping)
-        and str(request.get("source_type") or "") == "myrealtrip_product"
+        and str(request.get("source_type") or "") in PRODUCT_SOURCE_TYPES
     )
     source_manifest = ""
     source_hashes: list[str] = []

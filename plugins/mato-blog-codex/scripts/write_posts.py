@@ -60,7 +60,10 @@ PRODUCT_LINK_HOSTS = {
     "myrealtrip.com",
     "www.myrealtrip.com",
     "experiences.myrealtrip.com",
+    "naver.me",
+    "brand.naver.com",
 }
+PRODUCT_SOURCE_TYPES = {"myrealtrip_product", "naver_shopping_product"}
 
 
 def _finalized_product_post_sha256(post: Mapping[str, Any]) -> str:
@@ -143,7 +146,7 @@ def _clean_link_url(value: object) -> str:
     ):
         raise ValueError("link_url must be a public HTTP(S) URL without credentials")
     if host not in PRODUCT_LINK_HOSTS and not host.endswith(".myrealtrip.com"):
-        raise ValueError("link_url must be a MyRealTrip product URL")
+        raise ValueError("link_url must be a supported product URL")
     return url
 
 
@@ -386,7 +389,7 @@ def _effective_product_post(
     if (
         "link_url" not in effective
         and isinstance(request, Mapping)
-        and str(request.get("source_type") or "") == "myrealtrip_product"
+        and str(request.get("source_type") or "") in PRODUCT_SOURCE_TYPES
         and request.get("product_url")
     ):
         effective["link_url"] = request["product_url"]
@@ -402,10 +405,10 @@ def _enforce_product_run_contract(
     effective_post: Mapping[str, Any],
 ) -> None:
     request = run.get("request")
-    if not isinstance(request, Mapping) or request.get("source_type") != "myrealtrip_product":
+    if not isinstance(request, Mapping) or str(request.get("source_type") or "") not in PRODUCT_SOURCE_TYPES:
         return
     if details.get("title_plan") is None:
-        raise ValueError("myrealtrip_product posts require a title_plan")
+        raise ValueError("product posts require a title_plan")
     link_url = str(details.get("link_url") or "")
     if link_url != str(request.get("product_url") or ""):
         raise ValueError("product link_url must exactly match request.product_url")
@@ -414,7 +417,7 @@ def _enforce_product_run_contract(
     if mode == "all_unique_seller_product_images":
         if not details.get("image_placements") or not image_manifest:
             raise ValueError(
-                "myrealtrip_product seller-image posts require image_placements and image_manifest"
+                "seller-image product posts require image_placements and image_manifest"
             )
         writing_state = run.get("product_writing")
         if not isinstance(provenance, Mapping) or not isinstance(writing_state, Mapping):
@@ -445,7 +448,7 @@ def _enforce_product_run_contract(
         if details.get("image_placements") or image_manifest:
             raise ValueError("image_policy none cannot include product images")
     else:
-        raise ValueError("myrealtrip_product has an invalid image_policy mode")
+        raise ValueError("product run has an invalid image_policy mode")
 
 
 def _run_relative_manifest(directory: Path, value: object) -> str:

@@ -46,3 +46,10 @@ Use plain text, not Markdown. Include at least three non-empty `ㅂㅂㅂ` headi
 - For MyRealTrip product runs, treat current-product seller gallery, introduction, and itinerary images as covered by standing approval; do not ask a separate permission question. Always deny traveler/review photos, recommendations and other products, profiles, placeholders, and UI assets.
 - Privacy cleanup may remove GPS/EXIF/XMP/ICC data and re-encode an owned or authorized image. Do not fabricate dates, cameras, locations, hashtags, or provenance metadata, and do not manipulate pixels for detection evasion.
 - Do not solve or bypass CAPTCHA, access restrictions, or anti-automation controls.
+
+## Naver Shopping product evidence
+
+- Use only facts parsed from the same Brand Store product ID, the seller gallery manifest, and at least five expanded text reviews from that product's review tab.
+- A review supports only a short, paraphrased, attributed tendency. It never proves the author's purchase, long-term use, or satisfaction.
+- Product gallery images are supplier images. Keep them locally with their exact original path provenance; never include buyer-review, profile, checkout, video, or UI images.
+- Preserve one sequential image tag per manifest image. The finished product manuscript must be named `<title>_함축.txt` and sit beside its matching `image_N.jpg` files.

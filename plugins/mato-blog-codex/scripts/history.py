@@ -55,6 +55,8 @@ except ImportError:  # Direct execution: ``python scripts/history.py``.
 
 TERMINAL_STATUSES = {"completed", "complete", "failed", "cancelled", "blocked"}
 PRODUCT_SOURCE_TYPE = "myrealtrip_product"
+NAVER_SHOPPING_PRODUCT_SOURCE_TYPE = "naver_shopping_product"
+PRODUCT_SOURCE_TYPES = {PRODUCT_SOURCE_TYPE, NAVER_SHOPPING_PRODUCT_SOURCE_TYPE}
 PRODUCT_IMAGE_MODE = "all_unique_seller_product_images"
 PRODUCT_MAX_IMAGES = 80
 PRODUCT_REQUEST_FIELDS = {
@@ -111,7 +113,7 @@ def _permission_flag(value: Any) -> bool:
     raise ValueError("image_policy.permission_confirmed는 boolean이어야 합니다.")
 
 
-def _valid_product_url(value: str) -> bool:
+def _valid_product_url(value: str, *, source_type: str) -> bool:
     parsed = urlparse(value)
     host = (parsed.hostname or "").lower().rstrip(".")
     try:
@@ -125,6 +127,11 @@ def _valid_product_url(value: str) -> bool:
         or port not in {None, 443}
     ):
         return False
+    if source_type == NAVER_SHOPPING_PRODUCT_SOURCE_TYPE:
+        return bool(
+            (host == "naver.me" and re.fullmatch(r"/[A-Za-z0-9_-]{4,64}/?", parsed.path) and not parsed.query)
+            or (host == "brand.naver.com" and re.fullmatch(r"/[^/]+/products/[1-9][0-9]*/?", parsed.path))
+        )
     if host == "experiences.myrealtrip.com":
         return bool(re.fullmatch(r"/products/[1-9][0-9]*/?", parsed.path))
     if host == "myrealt.rip":
@@ -180,12 +187,12 @@ def _build_run_request(
         if key in PRODUCT_REQUEST_FIELDS
     }
     source_type = _clean_text(fields.get("source_type"))
-    is_product = source_type == PRODUCT_SOURCE_TYPE
+    is_product = source_type in PRODUCT_SOURCE_TYPES
     normalized_surface = "product" if is_product else str(surface).strip()
     if normalized_surface not in {"통합검색", "블로그탭", "integrated", "blog", "product"}:
         raise ValueError("검색 영역은 통합검색, 블로그탭 또는 product여야 합니다.")
     if normalized_surface == "product" and not is_product:
-        raise ValueError("product 영역은 myrealtrip_product 요청에서만 사용할 수 있습니다.")
+        raise ValueError("product 영역은 지원되는 상품 요청에서만 사용할 수 있습니다.")
 
     cleaned_keyword = _clean_text(keyword)
     if is_product:
@@ -204,21 +211,21 @@ def _build_run_request(
     }
     if is_product:
         product_url = _clean_text(fields.get("product_url"))
-        if not _valid_product_url(product_url):
-            raise ValueError("myrealtrip_product 요청에 안전한 product_url이 필요합니다.")
+        if not _valid_product_url(product_url, source_type=source_type):
+            raise ValueError("상품 요청에 안전한 product_url이 필요합니다.")
         channel = _clean_text(fields.get("channel") or "naver").lower()
         if channel != "naver":
-            raise ValueError("myrealtrip_product channel은 v1에서 naver만 허용됩니다.")
+            raise ValueError("상품 작성 channel은 v1에서 naver만 허용됩니다.")
         image_policy = _normalize_product_image_policy(fields.get("image_policy"))
         try:
             link_wait_ms = int(fields.get("link_wait_ms", 2_000))
         except (TypeError, ValueError):
             raise ValueError("link_wait_ms는 정수여야 합니다.") from None
         if link_wait_ms != 2_000:
-            raise ValueError("myrealtrip_product link_wait_ms는 정확히 2000이어야 합니다.")
+            raise ValueError("상품 작성 link_wait_ms는 정확히 2000이어야 합니다.")
         request.update(
             {
-                "source_type": PRODUCT_SOURCE_TYPE,
+                "source_type": source_type,
                 "channel": channel,
                 "product_url": product_url,
                 "main_keyword": cleaned_keyword,
@@ -233,7 +240,13 @@ def _build_run_request(
                 "link_wait_ms": link_wait_ms,
             }
         )
-    folder_label = cleaned_keyword or ("myrealtrip-product" if is_product else "run")
+    folder_label = cleaned_keyword or (
+        "naver-shopping-product"
+        if source_type == NAVER_SHOPPING_PRODUCT_SOURCE_TYPE
+        else "myrealtrip-product"
+        if is_product
+        else "run"
+    )
     return request, folder_label
 
 

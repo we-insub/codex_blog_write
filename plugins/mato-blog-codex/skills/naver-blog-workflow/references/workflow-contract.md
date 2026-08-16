@@ -25,6 +25,7 @@ python scripts/profiles.py reset --slot 1 --confirm RESET-1
 python scripts/parse_request.py --command-file <local-staging/request.txt>
 python scripts/myrealtrip_product.py --input <local-staging/browser-html.json> --classify-output <local-staging/hydration-candidates.json>
 python scripts/myrealtrip_product.py --input <local-staging/browser-product.json> --output-dir <run-dir>/sources/myrealtrip-product --facts-output <local-staging/product-facts.json> --purge-input --max-images 80
+python scripts/naver_shopping_product.py --input <local-staging/browser-shopping-product.json> --output-dir <run-dir>/sources/naver-shopping-product --facts-output <local-staging/shopping-product-facts.json>
 python scripts/prompt_manager.py init --prompt-key 공통
 python scripts/prompt_manager.py export --prompt-key 공통 --output <local-staging/mato-common-prompt.txt>
 python scripts/product_writing.py brief --run-dir <run-dir> --facts <local-staging/product-facts.json> --image-manifest <run-dir>/sources/myrealtrip-product/manifest.json --visual-summaries <local-staging/visual-summaries.json> --brief-output <run-dir>/analysis/product-writing-brief.json --overlay-output <local-staging/product-overlay.txt> --purge-facts
@@ -143,6 +144,14 @@ Visually inspect every prepared JPEG and create exactly one summary for every ma
 The prior-title staging input is `{"titles": ["title only"]}` and must not contain prior post bodies. The brief command requires that input and the exact durable manifest, then writes exactly `<run>/analysis/product-writing-brief.json` plus an ephemeral overlay. It produces five hard-validated Naver title candidates, selects one deterministically with history-duplicate penalty, blocks a recognized region mismatch, aggregates reviews as non-quoting trends, and binds every seller image. Generate one raw post using the exported `공통` prompt plus this overlay; do not edit `공통.txt`, and do not put URLs or image tags in the raw model output. Companions define the target persona only. First-person experience is allowed solely for facts explicitly present in `experience_notes`; review text never supplies user experience.
 
 Run `product_writing.py finalize`, then `write_posts.py`, `prepare_image_datasets.py --source-dir <run>/sources/myrealtrip-product/prepared`, and `validate_posts.py --expected 1` in that order. The finalizer supplies the exact selected title, fact and experience evidence, sequential image placements, manifest path, and exact original `product_url`. The writer makes that URL the first and last non-empty `본문2:` lines, exactly twice. Product image preparation copies the manifest-bound prepared JPEGs without another re-encode. The uploader waits `2000ms` after each of the two URL lines; any changed URL, missing/extra image, changed hash, incomplete proof, or missing permission invalidates the run.
+
+## Naver Shopping product contract
+
+`https://naver.me/<code>` and `https://brand.naver.com/<store>/products/<id>` select `source_type: naver_shopping_product`. It has the same Naver-only one-post and `image_policy` contract as the MyRealTrip product path, but the source proof is different: product and review tab DOM are separate Browser captures, the review tab has at least five expanded text reviews, and the proof records the stable product-gallery count.
+
+The collector accepts only direct product-gallery `<img>` nodes served from `shop-phinf.pstatic.net`. It normalizes every selected source to `https://shop-phinf.pstatic.net/<original path>` with no query string, so a thumbnail such as `?type=f40` is downloaded as its seller original rather than the 40-pixel derivative. It uses contiguous `image_N.jpg` prepared files and manifest kind `naver_shopping_product_images`. It always rejects `phinf.pstatic.net`, `checkout.phinf.pstatic.net`, `profile-phinf.pstatic.net`, video thumbnails, review attachments, and UI assets.
+
+The shopping facts JSON contains the exact Brand Store product ID/canonical URL, visible product title, any visible price/rating/review count, and five review text records. `product_writing.py` uses these reviews only as paraphrased, attributed context and binds all accepted original seller images one-to-one to the generated `<title>_함축.txt`.
 
 ## Generated post input
 

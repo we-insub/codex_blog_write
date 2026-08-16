@@ -34,7 +34,10 @@ except ImportError:
 
 
 PRODUCT_SOURCE_TYPE = "myrealtrip_product"
+NAVER_SHOPPING_PRODUCT_SOURCE_TYPE = "naver_shopping_product"
+PRODUCT_SOURCE_TYPES = {PRODUCT_SOURCE_TYPE, NAVER_SHOPPING_PRODUCT_SOURCE_TYPE}
 IMAGE_MANIFEST_KIND = "myrealtrip_product_images"
+NAVER_SHOPPING_IMAGE_MANIFEST_KIND = "naver_shopping_product_images"
 SECTION_ROLE_ORDER = (
     "family_benefits",
     "product_details",
@@ -227,12 +230,13 @@ def _run_file(run_dir: Path, value: object, *, label: str) -> Path:
 
 def _product_request(run: Mapping[str, Any]) -> Mapping[str, Any]:
     request = run.get("request")
-    if not isinstance(request, Mapping) or request.get("source_type") != PRODUCT_SOURCE_TYPE:
-        raise ValueError("run is not a MyRealTrip product run")
+    source_type = str(request.get("source_type") or "") if isinstance(request, Mapping) else ""
+    if not isinstance(request, Mapping) or source_type not in PRODUCT_SOURCE_TYPES:
+        raise ValueError("run is not a supported product run")
     if str(request.get("channel") or "naver").lower() != "naver":
-        raise ValueError("MyRealTrip product writing v1 supports Naver only")
+        raise ValueError("product writing v1 supports Naver only")
     if int(request.get("versions") or 0) != 1:
-        raise ValueError("MyRealTrip product writing v1 requires exactly one post")
+        raise ValueError("product writing v1 requires exactly one post")
     return request
 
 
@@ -330,7 +334,24 @@ def _product_text(facts: Mapping[str, Any]) -> str:
     return " ".join(item for item in (_text(facts.get("title")), location_text, itinerary_text) if item)
 
 
-def _fallback_keywords(facts: Mapping[str, Any]) -> tuple[str, list[str]]:
+def _fallback_keywords(
+    facts: Mapping[str, Any], *, source_type: str = PRODUCT_SOURCE_TYPE
+) -> tuple[str, list[str]]:
+    if source_type == NAVER_SHOPPING_PRODUCT_SOURCE_TYPE:
+        title = re.sub(r"\[[^\]]*\]", " ", _text(facts.get("title")))
+        tokens = main_keyword_terms(title)
+        product_word = next(
+            (
+                value
+                for value in tokens
+                if value.endswith(
+                    ("청소기", "가전", "의자", "침대", "화장품", "공기청정기")
+                )
+            ),
+            "",
+        )
+        main = product_word or " ".join(tokens[:3]) or "상품"
+        return main, ["사용후기", "가격", "장단점"]
     product_text = _product_text(facts)
     cities = [
         city
@@ -360,6 +381,17 @@ def infer_persona(request: Mapping[str, Any]) -> dict[str, Any]:
     )
     has_child = any(word in evidence for word in ("아이", "아기", "자녀", "애기"))
     has_parent = any(word in evidence for word in ("부모", "시부모", "어르신", "엄마", "아빠"))
+    source_type = str(request.get("source_type") or "")
+    if source_type == NAVER_SHOPPING_PRODUCT_SOURCE_TYPE:
+        if has_child and has_parent:
+            label = "아이와 부모님을 함께 고려하는 상품 구매자"
+        elif has_child:
+            label = "아이 사용 환경을 고려하는 상품 구매자"
+        elif has_parent:
+            label = "부모님 사용 편의도 함께 보는 상품 구매자"
+        else:
+            label = "상품 구매를 비교하는 독자"
+        return {"label": label, "child": has_child, "parent": has_parent}
     if has_child and has_parent:
         label = "아이와 부모님·시부모님을 함께 챙기는 3대 가족 엄마"
     elif has_child:
@@ -406,7 +438,60 @@ def discover_prior_titles(run_dir: str | Path, *, limit: int = 500) -> list[str]
     return titles
 
 
+def _naver_shopping_manifest_rows(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Validate original seller gallery rows from Naver Brand Store only."""
+
+    policy = manifest.get("image_policy")
+    proof = manifest.get("collection_proof")
+    rows = manifest.get("accepted")
+    try:
+        candidate_count = int(manifest.get("candidate_count") or 0)
+        image_count = int(manifest.get("image_count") or 0)
+        stable = [int(value) for value in proof.get("stable_image_counts", [])]
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("Naver Shopping seller-image manifest has invalid counts") from exc
+    canonical = str(manifest.get("canonical_url") or "")
+    if (
+        not isinstance(policy, Mapping)
+        or policy.get("seller_only") is not True
+        or policy.get("original_url_without_resize_query") is not True
+        or policy.get("review_images_excluded") is not True
+        or not isinstance(proof, Mapping)
+        or proof.get("review_tab_opened") is not True
+        or proof.get("review_more_expanded") is not True
+        or str(proof.get("page_url") or "").rstrip("/") != canonical.rstrip("/")
+        or candidate_count <= 0
+        or stable != [candidate_count, candidate_count]
+        or not isinstance(rows, list)
+        or image_count != len(rows)
+    ):
+        raise ValueError("Naver Shopping seller-image manifest has incomplete Browser proof")
+    result: list[dict[str, Any]] = []
+    for index, raw in enumerate(rows, start=1):
+        if not isinstance(raw, Mapping):
+            raise ValueError("Naver Shopping image row is invalid")
+        source = str(raw.get("source_url") or "")
+        parsed = urlsplit(source)
+        if (
+            int(raw.get("index") or 0) != index
+            or raw.get("classification") != "product"
+            or str(raw.get("source_role") or raw.get("role") or "") != "gallery"
+            or parsed.scheme.lower() != "https"
+            or (parsed.hostname or "").lower() != "shop-phinf.pstatic.net"
+            or bool(parsed.query)
+            or str(raw.get("file") or "") != f"prepared/image_{index}.jpg"
+            or not re.fullmatch(r"[0-9a-f]{64}", str(raw.get("sha256") or "").lower())
+            or int(raw.get("width") or 0) <= 0
+            or int(raw.get("height") or 0) <= 0
+        ):
+            raise ValueError("Naver Shopping manifest contains a non-original seller image")
+        result.append({**dict(raw), "source_role": "gallery"})
+    return result
+
+
 def _manifest_rows(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if manifest.get("kind") == NAVER_SHOPPING_IMAGE_MANIFEST_KIND:
+        return _naver_shopping_manifest_rows(manifest)
     if manifest.get("kind") != IMAGE_MANIFEST_KIND:
         raise ValueError("not a MyRealTrip seller-image manifest")
     policy = manifest.get("image_policy")
@@ -544,9 +629,10 @@ def build_product_writing_brief(
     directory = Path(run_dir).expanduser().resolve()
     run = load_run(directory)
     request = _product_request(run)
+    source_type = str(request.get("source_type") or "")
     policy = request.get("image_policy")
     if not isinstance(policy, Mapping):
-        raise ValueError("myrealtrip product run requires image_policy")
+        raise ValueError("product run requires image_policy")
     rows = _manifest_rows(image_manifest)
     if len(rows) > int(policy.get("max_images") or 0):
         raise ValueError("seller image count exceeds the approved max_images")
@@ -562,7 +648,10 @@ def build_product_writing_brief(
         not canonical
         or not facts_canonical
         or facts_canonical.rstrip("/") != canonical.rstrip("/")
-        or not canonical.rstrip("/").endswith(f"/products/{source_product_id}")
+        or (
+            source_type == PRODUCT_SOURCE_TYPE
+            and not canonical.rstrip("/").endswith(f"/products/{source_product_id}")
+        )
     ):
         raise ValueError("product facts and image manifest URLs do not match")
     if str(image_manifest.get("source_url") or "") != str(request.get("product_url") or ""):
@@ -572,7 +661,9 @@ def build_product_writing_brief(
     expected_indexes = set(range(1, len(rows) + 1))
     if set(visuals) != expected_indexes:
         raise ValueError("every seller image requires exactly one visual summary")
-    fallback_main, fallback_subkeywords = _fallback_keywords(facts)
+    fallback_main, fallback_subkeywords = _fallback_keywords(
+        facts, source_type=source_type
+    )
     main_keyword = _text(request.get("main_keyword")) or fallback_main
     subkeywords = _text_list(request.get("subkeywords")) or fallback_subkeywords
     hook = _text(request.get("hook")) or "솔직후기"
@@ -671,11 +762,19 @@ def build_product_writing_brief(
     narrative_purpose = (
         "제목에 드러난 동행자와 실제 선택 이유, 이동 중 느낀 점"
         if persona["child"] or persona["parent"]
-        else "내가 이 투어를 고른 이유와 실제 코스에서 느낀 점"
+        else "상품 사진과 확인된 구성으로 살펴보는 선택 포인트"
     )
+    if source_type == NAVER_SHOPPING_PRODUCT_SOURCE_TYPE:
+        narrative_purpose = "제품 선택 기준과 판매자 사진에서 확인한 대표 특징"
+        product_details_purpose = "제품 구성·디자인·확인된 사용 환경"
+        itinerary_purpose = "판매자 사진에서 확인한 구성과 사용 방식"
+        booking_checks_purpose = "구매 전 가격·후기·구성 확인 포인트"
+    else:
+        product_details_purpose = "상품 구성·포함사항·이용 팁"
+        booking_checks_purpose = "추가금·불포함·안전·취소 예약 전 체크"
     return {
         "schema_version": 1,
-        "kind": "myrealtrip_product_writing_brief",
+        "kind": f"{source_type}_writing_brief",
         "product": sanitized_facts,
         "product_id": source_product_id,
         "canonical_url": canonical,
@@ -696,7 +795,11 @@ def build_product_writing_brief(
             "notes": experience_notes,
             "first_person_allowed": True,
             "title_aligned_first_person": True,
-            "rule": "제목과 동행자 키워드에 맞춘 1인칭 여행기 문체로 쓴다. 제목에 없는 가족 설정은 넣지 않는다.",
+            "rule": (
+                "제목과 동행자 키워드에 맞춘 1인칭 여행기 문체로 쓴다. 제목에 없는 가족 설정은 넣지 않는다."
+                if source_type == PRODUCT_SOURCE_TYPE
+                else "사용자 경험 노트가 없으면 직접 구매·사용한 것처럼 쓰지 않고, 상품 정보와 후기에서 확인한 내용으로 정리한다."
+            ),
         },
         "review_summary": review_summary,
         "review_context": expanded_review_context,
@@ -710,9 +813,9 @@ def build_product_writing_brief(
         "image_manifest_sha256": manifest_sha256,
         "section_contract": [
             {"order": 1, "role": "family_benefits", "purpose": narrative_purpose, "minimum_paragraphs": minimum_paragraphs["family_benefits"]},
-            {"order": 2, "role": "product_details", "purpose": "상품 구성·포함사항·이용 팁", "minimum_paragraphs": minimum_paragraphs["product_details"]},
+            {"order": 2, "role": "product_details", "purpose": product_details_purpose, "minimum_paragraphs": minimum_paragraphs["product_details"]},
             {"order": 3, "role": "itinerary", "purpose": itinerary_purpose, "minimum_paragraphs": minimum_paragraphs["itinerary"]},
-            {"order": 4, "role": "booking_checks", "purpose": "추가금·불포함·안전·취소 예약 전 체크", "minimum_paragraphs": minimum_paragraphs["booking_checks"]},
+            {"order": 4, "role": "booking_checks", "purpose": booking_checks_purpose, "minimum_paragraphs": minimum_paragraphs["booking_checks"]},
         ],
     }
 
@@ -726,11 +829,11 @@ def render_overlay(brief: Mapping[str, Any]) -> str:
         "- 제목은 title_plan.exact_title을 그대로 사용합니다.\n"
         "- 상품 수치·코스·포함/불포함은 product 범위에서만 씁니다.\n"
         "- 사용자 experience.notes가 있을 때만 1인칭 실제 체험으로 씁니다. 없으면 작성자가 직접 이용한 것처럼 쓰지 말고 상품 정보와 후기 기반 정리임을 분명히 합니다.\n"
-        "- 인트로에는 가격·소요시간·평점·후기 수를 근거값 그대로 자연스럽게 녹입니다.\n"
+        "- 인트로에는 확인된 가격·평점·후기 수 등 근거값만 자연스럽게 녹입니다. 없는 수치는 추측하지 않습니다.\n"
         "- review_context는 '후기 모두 보기'와 각 '더 보기'를 펼쳐 수집한 실제 후기입니다. 상세 서비스·식사·활동·진행 포인트를 고를 때 사용하되, 후기 문장을 그대로 길게 복사하거나 작성자 체험으로 바꾸지 않습니다.\n"
         "- 후기를 쓸 때는 '상세 후기에서는 …가 언급됩니다'처럼 출처를 구분해 짧게 요약합니다. review_claims에는 해당 문장, review_indexes, 원문에서 실제로 확인한 evidence_terms를 기록합니다.\n"
-        "- 각 소제목에는 이 상품의 코스·포함사항·예약 조건 또는 후기에서 확인한 구체적 포인트를 연결합니다. 누구에게나 통하는 추상적인 조언만 쓰지 않습니다.\n"
-        "- 장점을 중심으로 쓰되 추가금, 불포함, 안전, 취소 조건은 예약 전 체크에서 빠뜨리지 않습니다.\n"
+        "- 각 소제목에는 상품의 확인된 구성·사용 포인트 또는 후기에서 확인한 구체적 포인트를 연결합니다. 누구에게나 통하는 추상적인 조언만 쓰지 않습니다.\n"
+        "- 확인되지 않은 추가금, 불포함, 안전, 취소 조건은 만들어 쓰지 않습니다.\n"
         "- sections는 section_contract 순서의 4개 역할을 만들고 각 section 객체에 role을 그대로 넣으며 minimum_paragraphs 이상 작성합니다.\n"
         "- 후처리기는 이미지를 최대 2장씩 먼저 넣고 바로 다음 줄에 그 사진과 연결된 실제 본문 문단을 둡니다. 따라서 이미지 뒤에 소제목·URL·표·빈 문단을 두지 말고, 각 이미지 묶음 뒤에 독자가 읽을 자연스러운 경험 문단이 충분히 오도록 작성합니다.\n"
         "- posts[0].fact_claims에 각 필수 상품 필드, 본문에 실제로 쓴 문장, 근거값, section role을 기록합니다.\n"
@@ -1112,6 +1215,19 @@ def _fact_evidence(brief: Mapping[str, Any]) -> dict[str, list[str]]:
     product = brief.get("product")
     if not isinstance(product, Mapping):
         raise ValueError("product writing brief has no product facts")
+    if product.get("source_type") == NAVER_SHOPPING_PRODUCT_SOURCE_TYPE:
+        evidence = {
+            field: [value]
+            for field, value in {
+                "price": _text(product.get("price_text")),
+                "rating": _text(product.get("rating")),
+                "review_count": _text(product.get("review_count")),
+            }.items()
+            if value
+        }
+        if not evidence:
+            raise ValueError("Naver Shopping product has no factual evidence")
+        return evidence
     price = _text(product.get("price_text"))
     duration = _text(product.get("tour_duration"))
     itineraries = [
@@ -1483,7 +1599,9 @@ def _finalize_command(args: argparse.Namespace) -> dict[str, Any]:
     product = brief.get("product")
     if not isinstance(product, Mapping):
         raise ValueError("product writing brief has no product facts")
-    fallback_main, fallback_subkeywords = _fallback_keywords(product)
+    fallback_main, fallback_subkeywords = _fallback_keywords(
+        product, source_type=str(request.get("source_type") or "")
+    )
     expected_main = _text(request.get("main_keyword")) or fallback_main
     allowed_subkeywords = _text_list(request.get("subkeywords")) or fallback_subkeywords
     selected_subkeywords = (
