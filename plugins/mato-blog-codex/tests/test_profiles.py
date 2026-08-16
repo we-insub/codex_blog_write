@@ -246,6 +246,22 @@ class ProfileCatalogTests(unittest.TestCase):
         self.assertTrue(all(row["connector_ready"] for row in result))
         self.assertEqual(connector.call_count, 2)
 
+    def test_opened_profile_leaves_keep_login_to_the_owning_host(self) -> None:
+        profiles.add_profile(1, alias="계정1", blog_url="owner1")
+        profiles.add_profile(2, alias="계정2", blog_url="owner2")
+        with patch.object(
+            profiles,
+            "open_profile_browser",
+            side_effect=[
+                {"slot": 1, "status": "opened", "connector_ready": True},
+                {"slot": 2, "status": "already_open", "connector_ready": True},
+            ],
+        ):
+            result = profiles.open_profiles("1,2")
+
+        self.assertTrue(result[0]["keep_login_managed"])
+        self.assertNotIn("keep_login_managed", result[1])
+
     def test_voice_metadata_is_saved_without_browser_and_redacts_secrets(self) -> None:
         profiles.add_profile(1, alias="계정", blog_url="owner1")
         with patch.object(

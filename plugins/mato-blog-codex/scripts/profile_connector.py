@@ -20,6 +20,11 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
+try:
+    from .profile_runtime import read_profile_state
+except ImportError:  # Direct execution from the scripts directory.
+    from profile_runtime import read_profile_state  # type: ignore[no-redef]
+
 
 DEVTOOLS_ACTIVE_PORT = "DevToolsActivePort"
 PROFILE_LOCK_NAMES = ("SingletonLock", "lockfile")
@@ -188,6 +193,14 @@ def open_profile_browser(
         raise RuntimeError(
             f"프로필 {profile['slot']} 폴더가 없습니다. 먼저 프로필을 생성해 주세요: {profile_path}"
         )
+    runtime_state = read_profile_state(profile_path)
+    if runtime_state is not None:
+        return {
+            "slot": int(profile["slot"]),
+            "profile_path": str(profile_path),
+            "status": "already_open",
+            "connector_ready": True,
+        }
     existing = connector_endpoint(profile_path)
     if existing:
         return {
@@ -205,7 +218,6 @@ def open_profile_browser(
             "해당 전용 창만 닫은 뒤 다시 열어주세요."
         )
 
-    chrome = find_chrome_executable()
     target_url = str(profile.get("write_url") or profile.get("blog_url") or "https://www.naver.com")
     windows = is_windows()
     creationflags = 0
@@ -215,13 +227,11 @@ def open_profile_browser(
         )
     process = subprocess.Popen(
         [
-            str(chrome),
-            f"--user-data-dir={profile_path}",
-            "--remote-debugging-address=127.0.0.1",
-            "--remote-debugging-port=0",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--new-window",
+            sys.executable,
+            str(Path(__file__).with_name("profile_host.py")),
+            "--profile-path",
+            str(profile_path),
+            "--target-url",
             target_url,
         ],
         stdin=subprocess.DEVNULL,
@@ -233,6 +243,14 @@ def open_profile_browser(
     )
     deadline = time.monotonic() + max(3.0, float(timeout_seconds))
     while time.monotonic() < deadline:
+        if read_profile_state(profile_path) is not None:
+            return {
+                "slot": int(profile["slot"]),
+                "profile_path": str(profile_path),
+                "status": "opened",
+                "connector_ready": True,
+                "process_id": int(process.pid),
+            }
         endpoint = connector_endpoint(profile_path)
         if endpoint:
             return {

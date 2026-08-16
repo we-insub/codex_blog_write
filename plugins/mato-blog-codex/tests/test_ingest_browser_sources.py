@@ -185,6 +185,74 @@ class BrowserSourceIngestTests(unittest.TestCase):
 
 
 class NaturalLanguageRequestTests(unittest.TestCase):
+    def test_myrealtrip_url_is_separate_from_keyword_and_uses_product_defaults(self) -> None:
+        result = parse_request.parse_request(
+            "[상품](https://experiences.myrealtrip.com/products/3510284)"
+        )
+        self.assertEqual(result["source_type"], "myrealtrip_product")
+        self.assertEqual(
+            result["product_url"],
+            "https://experiences.myrealtrip.com/products/3510284",
+        )
+        self.assertEqual(result["keyword"], "")
+        self.assertEqual(result["main_keyword"], "")
+        self.assertEqual(result["surface"], "product")
+        self.assertEqual(result["channel"], "naver")
+        self.assertEqual(result["versions"], 1)
+        self.assertEqual(
+            result["image_policy"],
+            {
+                "mode": "all_unique_seller_product_images",
+                "permission_confirmed": True,
+                "max_images": 80,
+            },
+        )
+        self.assertEqual(result["link_wait_ms"], 2_000)
+
+    def test_myrealtrip_request_parses_labelled_audience_and_image_contract(self) -> None:
+        result = parse_request.parse_request(
+            "https://myrealt.rip/iZRp3d\n"
+            "메인키워드: 베트남 나트랑 투어\n"
+            "서브키워드: 아이랑, 부모님이랑, 비용\n"
+            "후킹 문구: 솔직후기\n"
+            "동행자: 시부모 + 아이 둘\n"
+            "경험노트: 이동이 편했고, 가족 모두 만족함\n"
+            "업체 제공 사진 사용 가능 이미지 최대 24장\n"
+            "프로필 2 임시저장"
+        )
+        self.assertEqual(result["keyword"], "베트남 나트랑 투어")
+        self.assertNotIn("myrealt", result["keyword"])
+        self.assertEqual(result["subkeywords"], ["아이랑", "부모님이랑", "비용"])
+        self.assertEqual(result["hook"], "솔직후기")
+        self.assertEqual(result["companions"], ["시부모", "아이 둘"])
+        self.assertEqual(result["experience_notes"], ["이동이 편했고, 가족 모두 만족함"])
+        self.assertEqual(result["profiles"], [2])
+        self.assertTrue(result["upload_requested"])
+        self.assertEqual(result["image_policy"]["max_images"], 24)
+        self.assertTrue(result["image_policy"]["permission_confirmed"])
+
+    def test_product_images_use_standing_approval(self) -> None:
+        unconfirmed = parse_request.parse_request(
+            'https://myrealt.rip/iZRp3d "나트랑 투어" 업체 이미지 모두 사용'
+        )
+        confirmed = parse_request.parse_request(
+            'https://myrealt.rip/iZRp3d "나트랑 투어" 사용권한 있음'
+        )
+        self.assertTrue(unconfirmed["image_policy"]["permission_confirmed"])
+        self.assertTrue(confirmed["image_policy"]["permission_confirmed"])
+
+    def test_product_rejects_google_channel_and_out_of_range_image_count(self) -> None:
+        with self.assertRaisesRegex(ValueError, "네이버 채널만"):
+            parse_request.parse_request(
+                'https://myrealt.rip/iZRp3d "나트랑 투어" 구글'
+            )
+        for count in (0, 81):
+            with self.subTest(count=count):
+                with self.assertRaisesRegex(ValueError, "80장"):
+                    parse_request.parse_request(
+                        f'https://myrealt.rip/iZRp3d "나트랑 투어" 이미지 {count}장'
+                    )
+
     def test_parses_multiline_profile_count_upload_and_keyword(self) -> None:
         result = parse_request.parse_request(
             "프로필1 새원고 3개\n업로드 임시저장\n염창 맛집"

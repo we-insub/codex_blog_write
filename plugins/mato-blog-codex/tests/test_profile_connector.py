@@ -206,10 +206,6 @@ class ProfileConnectorTests(unittest.TestCase):
                 "connector_endpoint",
                 side_effect=connector_results,
             ), patch.object(
-                profile_connector,
-                "find_chrome_executable",
-                return_value=Path("/test/Google Chrome"),
-            ), patch.object(
                 profile_connector.subprocess,
                 "Popen",
                 return_value=process,
@@ -228,9 +224,12 @@ class ProfileConnectorTests(unittest.TestCase):
 
         command = popen.call_args.args[0]
         options = popen.call_args.kwargs
-        self.assertIn(f"--user-data-dir={profile.resolve(strict=False)}", command)
-        self.assertIn("--remote-debugging-address=127.0.0.1", command)
-        self.assertIn("--remote-debugging-port=0", command)
+        self.assertEqual(command[0], sys.executable)
+        self.assertEqual(Path(command[1]).name, "profile_host.py")
+        self.assertIn("--profile-path", command)
+        self.assertIn(str(profile.resolve(strict=False)), command)
+        self.assertIn("--target-url", command)
+        self.assertIn("https://blog.naver.com/owner27?Redirect=Write&", command)
         self.assertEqual(options["creationflags"], expected_flags)
         self.assertEqual(options["start_new_session"], start_new_session)
         self.assertEqual(result["status"], "opened")

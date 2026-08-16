@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
+from urllib.parse import urlparse
 
 try:
     from .mato_common import (
@@ -52,6 +54,23 @@ except ImportError:  # Direct execution: ``python scripts/history.py``.
 
 
 TERMINAL_STATUSES = {"completed", "complete", "failed", "cancelled", "blocked"}
+PRODUCT_SOURCE_TYPE = "myrealtrip_product"
+NAVER_SHOPPING_PRODUCT_SOURCE_TYPE = "naver_shopping_product"
+PRODUCT_SOURCE_TYPES = {PRODUCT_SOURCE_TYPE, NAVER_SHOPPING_PRODUCT_SOURCE_TYPE}
+PRODUCT_IMAGE_MODE = "all_unique_seller_product_images"
+PRODUCT_MAX_IMAGES = 80
+PRODUCT_REQUEST_FIELDS = {
+    "source_type",
+    "channel",
+    "product_url",
+    "main_keyword",
+    "subkeywords",
+    "hook",
+    "companions",
+    "experience_notes",
+    "image_policy",
+    "link_wait_ms",
+}
 
 
 def _safe_mapping(value: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -61,6 +80,174 @@ def _safe_mapping(value: Mapping[str, Any] | None) -> dict[str, Any]:
     if not isinstance(sanitized, dict):  # Defensive; mappings always sanitize to dict.
         return {}
     return sanitized
+
+
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return redact_text(value).strip()
+
+
+def _clean_text_list(value: Any, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str) or not isinstance(value, Sequence):
+        raise ValueError(f"request_fields.{field_name}는 문자열 배열이어야 합니다.")
+    result: list[str] = []
+    for raw in value:
+        cleaned = _clean_text(raw)
+        if cleaned and cleaned not in result:
+            result.append(cleaned)
+    return result
+
+
+def _permission_flag(value: Any) -> bool:
+    """Normalize legacy request values to the workflow's standing approval."""
+
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return True
+    if value is None:
+        return True
+    raise ValueError("image_policy.permission_confirmed는 boolean이어야 합니다.")
+
+
+def _valid_product_url(value: str, *, source_type: str) -> bool:
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+    ):
+        return False
+    if source_type == NAVER_SHOPPING_PRODUCT_SOURCE_TYPE:
+        return bool(
+            (host == "naver.me" and re.fullmatch(r"/[A-Za-z0-9_-]{4,64}/?", parsed.path) and not parsed.query)
+            or (host == "brand.naver.com" and re.fullmatch(r"/[^/]+/products/[1-9][0-9]*/?", parsed.path))
+        )
+    if host == "experiences.myrealtrip.com":
+        return bool(re.fullmatch(r"/products/[1-9][0-9]*/?", parsed.path))
+    if host == "myrealt.rip":
+        return bool(
+            re.fullmatch(r"/[A-Za-z0-9_-]{4,64}/?", parsed.path)
+            and not parsed.query
+        )
+    return bool(
+        host in {"myrealtrip.com", "www.myrealtrip.com"}
+        and parsed.path.rstrip("/") == "/main/bridge/marketing"
+        and re.search(r"(?:^|&)return_url=", parsed.query, re.IGNORECASE)
+    )
+
+
+def _normalize_product_image_policy(value: Any) -> dict[str, Any]:
+    if value is None:
+        raw: Mapping[str, Any] = {}
+    elif isinstance(value, Mapping):
+        raw = value
+    else:
+        raise ValueError("request_fields.image_policy는 객체여야 합니다.")
+
+    mode = _clean_text(raw.get("mode") or PRODUCT_IMAGE_MODE)
+    if mode not in {PRODUCT_IMAGE_MODE, "none"}:
+        raise ValueError(
+            "image_policy.mode은 all_unique_seller_product_images 또는 none이어야 합니다."
+        )
+    try:
+        max_images = int(raw.get("max_images", PRODUCT_MAX_IMAGES))
+    except (TypeError, ValueError):
+        raise ValueError("image_policy.max_images는 정수여야 합니다.") from None
+    if not 1 <= max_images <= PRODUCT_MAX_IMAGES:
+        raise ValueError("image_policy.max_images는 1에서 80 사이여야 합니다.")
+    return {
+        "mode": mode,
+        "permission_confirmed": _permission_flag(raw.get("permission_confirmed")),
+        "max_images": max_images,
+    }
+
+
+def _build_run_request(
+    keyword: str,
+    surface: str,
+    versions: int,
+    command: str,
+    request_fields: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], str]:
+    """Build a backwards-compatible request and its safe run-folder label."""
+
+    fields = {
+        key: value
+        for key, value in dict(request_fields or {}).items()
+        if key in PRODUCT_REQUEST_FIELDS
+    }
+    source_type = _clean_text(fields.get("source_type"))
+    is_product = source_type in PRODUCT_SOURCE_TYPES
+    normalized_surface = "product" if is_product else str(surface).strip()
+    if normalized_surface not in {"통합검색", "블로그탭", "integrated", "blog", "product"}:
+        raise ValueError("검색 영역은 통합검색, 블로그탭 또는 product여야 합니다.")
+    if normalized_surface == "product" and not is_product:
+        raise ValueError("product 영역은 지원되는 상품 요청에서만 사용할 수 있습니다.")
+
+    cleaned_keyword = _clean_text(keyword)
+    if is_product:
+        cleaned_keyword = _clean_text(fields.get("main_keyword", cleaned_keyword))
+        if re.search(r"https?://", cleaned_keyword, re.IGNORECASE):
+            cleaned_keyword = ""
+    elif not cleaned_keyword:
+        raise ValueError("검색어가 비어 있습니다.")
+
+    request: dict[str, Any] = {
+        "keyword": cleaned_keyword,
+        "surface": normalized_surface,
+        "versions": versions,
+        "command": _clean_text(command),
+        "image_mode": "none",
+    }
+    if is_product:
+        product_url = _clean_text(fields.get("product_url"))
+        if not _valid_product_url(product_url, source_type=source_type):
+            raise ValueError("상품 요청에 안전한 product_url이 필요합니다.")
+        channel = _clean_text(fields.get("channel") or "naver").lower()
+        if channel != "naver":
+            raise ValueError("상품 작성 channel은 v1에서 naver만 허용됩니다.")
+        image_policy = _normalize_product_image_policy(fields.get("image_policy"))
+        try:
+            link_wait_ms = int(fields.get("link_wait_ms", 2_000))
+        except (TypeError, ValueError):
+            raise ValueError("link_wait_ms는 정수여야 합니다.") from None
+        if link_wait_ms != 2_000:
+            raise ValueError("상품 작성 link_wait_ms는 정확히 2000이어야 합니다.")
+        request.update(
+            {
+                "source_type": source_type,
+                "channel": channel,
+                "product_url": product_url,
+                "main_keyword": cleaned_keyword,
+                "subkeywords": _clean_text_list(fields.get("subkeywords"), "subkeywords"),
+                "hook": _clean_text(fields.get("hook")),
+                "companions": _clean_text_list(fields.get("companions"), "companions"),
+                "experience_notes": _clean_text_list(
+                    fields.get("experience_notes"), "experience_notes"
+                ),
+                "image_policy": image_policy,
+                "image_mode": image_policy["mode"],
+                "link_wait_ms": link_wait_ms,
+            }
+        )
+    folder_label = cleaned_keyword or (
+        "naver-shopping-product"
+        if source_type == NAVER_SHOPPING_PRODUCT_SOURCE_TYPE
+        else "myrealtrip-product"
+        if is_product
+        else "run"
+    )
+    return request, folder_label
 
 
 def _elapsed_seconds(started_at: str, ended_at: str) -> int | None:
@@ -257,26 +444,36 @@ def create_run(
     versions: int,
     command: str,
     run_dir: str | Path | None = None,
+    *,
+    request_fields: Mapping[str, Any] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
-    """Create and journal a new text-only workflow run.
+    """Create and journal a workflow run without breaking legacy callers.
 
     When *run_dir* is omitted a unique ``YYYYMMDD_HHMMSS_<keyword>`` directory
     is created under today's KST date directory on the user's Desktop. Existing
     explicit run folders are treated as resumes and are never overwritten.
+    ``request_fields`` carries the whitelisted MyRealTrip product contract; its
+    product URL is never substituted for a missing search/main keyword.
     """
 
-    if not str(keyword).strip():
-        raise ValueError("검색어가 비어 있습니다.")
     if versions <= 0:
         raise ValueError("생성 개수는 1 이상이어야 합니다.")
-    normalized_surface = str(surface).strip()
-    if normalized_surface not in {"통합검색", "블로그탭", "integrated", "blog"}:
-        raise ValueError("검색 영역은 통합검색 또는 블로그탭이어야 합니다.")
+    if request_fields is not None and not isinstance(request_fields, Mapping):
+        raise ValueError("request_fields는 객체여야 합니다.")
+    request, folder_label = _build_run_request(
+        keyword,
+        surface,
+        versions,
+        command,
+        request_fields,
+    )
+    normalized_surface = str(request["surface"])
+    normalized_keyword = str(request["keyword"])
 
     if run_dir is None:
         timestamp_segment = now_kst().strftime("%Y%m%d_%H%M%S")
         root = default_runs_root()
-        base = root / f"{timestamp_segment}_{slugify(keyword)}"
+        base = root / f"{timestamp_segment}_{slugify(folder_label)}"
         directory = base
         suffix = 2
         while directory.exists():
@@ -290,35 +487,25 @@ def create_run(
         if not isinstance(existing.get("request"), Mapping):
             update_run(
                 directory,
-                {
-                    "request": {
-                        "keyword": redact_text(keyword).strip(),
-                        "surface": normalized_surface,
-                        "versions": versions,
-                        "command": redact_text(command).strip(),
-                        "image_mode": "none",
-                    }
-                },
+                {"request": request, "input": dict(request)},
             )
         event = append_event(
             directory,
             "resumed",
             "in_progress",
             "기존 실행을 재개했습니다.",
-            {"keyword": keyword, "surface": normalized_surface, "versions": versions},
+            {
+                "keyword": normalized_keyword,
+                "surface": normalized_surface,
+                "versions": versions,
+                "source_type": request.get("source_type", "naver_search"),
+            },
             command=command,
         )
         del event
         return directory, load_run(directory)
 
     now = timestamp_kst()
-    request = {
-        "keyword": redact_text(keyword).strip(),
-        "surface": normalized_surface,
-        "versions": versions,
-        "command": redact_text(command).strip(),
-        "image_mode": "none",
-    }
     initial = {
         "schema_version": SCHEMA_VERSION,
         "run_id": directory.name,
@@ -339,7 +526,12 @@ def create_run(
         "created",
         "in_progress",
         "실행을 생성했습니다.",
-        {"keyword": keyword, "surface": normalized_surface, "versions": versions},
+        {
+            "keyword": normalized_keyword,
+            "surface": normalized_surface,
+            "versions": versions,
+            "source_type": request.get("source_type", "naver_search"),
+        },
         command=command,
     )
     return directory, load_run(directory)

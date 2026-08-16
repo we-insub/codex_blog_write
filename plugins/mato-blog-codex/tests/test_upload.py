@@ -5,7 +5,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from _support import (
     IsolatedMatoEnvironment,
@@ -120,6 +120,24 @@ class UploadPlanTests(unittest.TestCase):
             ],
         )
 
+    def test_product_runs_use_two_second_link_card_wait(self) -> None:
+        self.assertEqual(
+            upload._link_card_wait_ms(
+                {"request": {"source_type": "myrealtrip_product"}}
+            ),
+            2_000,
+        )
+        self.assertEqual(upload._link_card_wait_ms({"request": {}}), 4_000)
+        with self.assertRaisesRegex(ValueError, "exactly 2000"):
+            upload._link_card_wait_ms(
+                {
+                    "request": {
+                        "source_type": "myrealtrip_product",
+                        "link_wait_ms": 1_250,
+                    }
+                }
+            )
+
     def test_legacy_write_urls_are_normalized_like_helper(self) -> None:
         self.assertEqual(
             upload._normalize_naver_write_url(
@@ -191,6 +209,204 @@ class UploadPlanTests(unittest.TestCase):
         )
         self.assertEqual(first_text, "제목형 소제목")
 
+    def test_image_upload_waits_for_one_loaded_editor_component(self) -> None:
+        page = MagicMock()
+        uploader = upload.NaverTextUploader(page)
+        image_path = self.env.root / "image_1.jpg"
+        image_path.write_bytes(b"image")
+        button = MagicMock()
+        frame = MagicMock()
+        components = MagicMock()
+        components.count.side_effect = [0, 1, 1]
+        frame.locator.return_value = components
+        latest = components.nth.return_value
+        error_locator = MagicMock()
+        error_locator.count.return_value = 0
+        busy_locator = MagicMock()
+        busy_locator.count.return_value = 0
+        image_locator = MagicMock()
+        image_locator.count.return_value = 1
+        image_locator.last.evaluate.return_value = {
+            "src": "https://blogthumb.pstatic.net/editor/image.jpg",
+            "complete": True,
+            "width": 1200,
+            "height": 800,
+        }
+        latest.locator.side_effect = lambda selector: (
+            image_locator
+            if selector == "img"
+            else busy_locator
+            if selector == upload.EDITOR_IMAGE_BUSY_SELECTOR
+            else error_locator
+        )
+        chooser = page.expect_file_chooser.return_value.__enter__.return_value
+        with patch.object(upload, "_find_visible", return_value=button), patch.object(
+            uploader, "_editor_frame", return_value=frame
+        ):
+            uploader._upload_image(image_path)
+
+        chooser.value.set_files.assert_called_once_with(str(image_path))
+        self.assertEqual(components.nth.call_count, 2)
+        self.assertEqual(image_locator.last.evaluate.call_count, 2)
+
+    def test_image_upload_waits_through_blob_preview_for_stable_remote_image(self) -> None:
+        page = MagicMock()
+        uploader = upload.NaverTextUploader(page)
+        image_path = self.env.root / "image_1.jpg"
+        image_path.write_bytes(b"image")
+        frame = MagicMock()
+        components = MagicMock()
+        components.count.side_effect = [0, 1, 1, 1, 1]
+        frame.locator.return_value = components
+        latest = components.nth.return_value
+        error_locator = MagicMock()
+        error_locator.count.return_value = 0
+        busy_locator = MagicMock()
+        busy_locator.count.side_effect = [1, 0, 0, 0]
+        image_locator = MagicMock()
+        image_locator.count.return_value = 1
+        remote_state = {
+            "src": "https://blogthumb.pstatic.net/editor/final.jpg",
+            "complete": True,
+            "width": 1200,
+            "height": 800,
+        }
+        image_locator.last.evaluate.side_effect = [
+            {
+                "src": "blob:https://blog.naver.com/preview-id",
+                "complete": True,
+                "width": 1200,
+                "height": 800,
+            },
+            remote_state,
+            dict(remote_state),
+        ]
+        latest.locator.side_effect = lambda selector: (
+            image_locator
+            if selector == "img"
+            else busy_locator
+            if selector == upload.EDITOR_IMAGE_BUSY_SELECTOR
+            else error_locator
+        )
+
+        with patch.object(upload, "_find_visible", return_value=MagicMock()), patch.object(
+            uploader, "_editor_frame", return_value=frame
+        ):
+            uploader._upload_image(image_path)
+
+        self.assertEqual(image_locator.last.evaluate.call_count, 3)
+        self.assertEqual(busy_locator.count.call_count, 4)
+        self.assertGreaterEqual(page.wait_for_timeout.call_count, 3)
+
+    def test_image_upload_blob_preview_followed_by_late_error_is_fatal(self) -> None:
+        page = MagicMock()
+        uploader = upload.NaverTextUploader(page)
+        image_path = self.env.root / "image_1.jpg"
+        image_path.write_bytes(b"image")
+        frame = MagicMock()
+        components = MagicMock()
+        components.count.side_effect = [0, 1, 1]
+        frame.locator.return_value = components
+        latest = components.nth.return_value
+        error_locator = MagicMock()
+        error_locator.count.side_effect = [0, 1]
+        busy_locator = MagicMock()
+        busy_locator.count.return_value = 0
+        image_locator = MagicMock()
+        image_locator.count.return_value = 1
+        image_locator.last.evaluate.return_value = {
+            "src": "blob:https://blog.naver.com/preview-id",
+            "complete": True,
+            "width": 1200,
+            "height": 800,
+        }
+        latest.locator.side_effect = lambda selector: (
+            image_locator
+            if selector == "img"
+            else busy_locator
+            if selector == upload.EDITOR_IMAGE_BUSY_SELECTOR
+            else error_locator
+        )
+
+        with patch.object(upload, "_find_visible", return_value=MagicMock()), patch.object(
+            uploader, "_editor_frame", return_value=frame
+        ):
+            with self.assertRaises(upload.UploadError) as raised:
+                uploader._upload_image(image_path)
+
+        self.assertEqual(raised.exception.code, "image_upload_failed")
+        self.assertEqual(image_locator.last.evaluate.call_count, 1)
+
+    def test_image_upload_timeout_is_fatal_before_the_next_editor_action(self) -> None:
+        page = MagicMock()
+        uploader = upload.NaverTextUploader(page)
+        image_path = self.env.root / "image_1.jpg"
+        image_path.write_bytes(b"image")
+        frame = MagicMock()
+        components = MagicMock()
+        components.count.return_value = 0
+        frame.locator.return_value = components
+        with patch.object(upload, "_find_visible", return_value=MagicMock()), patch.object(
+            uploader, "_editor_frame", return_value=frame
+        ), patch.object(upload.time, "monotonic", side_effect=[0.0, 61.0]):
+            with self.assertRaises(upload.UploadError) as raised:
+                uploader._upload_image(image_path)
+        self.assertEqual(raised.exception.code, "image_upload_failed")
+
+    def test_image_preflight_rejects_missing_empty_and_non_image_assets(self) -> None:
+        for name, content in (("empty.jpg", b""), ("not-image.jpg", b"plain text")):
+            with self.subTest(name=name):
+                path = self.env.root / name
+                path.write_bytes(content)
+                with self.assertRaises(upload.UploadError) as raised:
+                    upload._preflight_image_assets([f"[{name}]"], self.env.root)
+                self.assertEqual(raised.exception.code, "image_upload_failed")
+        with self.assertRaises(upload.UploadError) as raised:
+            upload._preflight_image_assets(["[missing.jpg]"], self.env.root)
+        self.assertEqual(raised.exception.code, "image_upload_failed")
+
+    def test_image_group_creates_one_text_block_after_last_image_only(self) -> None:
+        page = MagicMock()
+        uploader = upload.NaverTextUploader(page)
+        frame = MagicMock()
+        placeholder = MagicMock()
+        for index in (1, 2):
+            (self.env.root / f"image_{index}.jpg").write_bytes(b"\xff\xd8\xffimage")
+        with patch.object(uploader, "_exact_text", return_value=placeholder), patch.object(
+            uploader, "_clear_region_placeholder"
+        ), patch.object(uploader, "_upload_image"), patch.object(
+            uploader, "_create_text_block_after_image"
+        ) as create_text_block:
+            uploader._process_lines(
+                frame,
+                ["[image_1.jpg]", "[image_2.jpg]", "사진 뒤 본문 문장입니다."],
+                upload.NAVER_BODY_PLACEHOLDER,
+                self.env.root,
+            )
+        create_text_block.assert_called_once_with()
+
+    def test_process_lines_waits_two_seconds_after_each_product_url(self) -> None:
+        page = MagicMock()
+        uploader = upload.NaverTextUploader(page, link_card_wait_ms=2_000)
+        frame = MagicMock()
+        placeholder = MagicMock()
+        with patch.object(uploader, "_exact_text", return_value=placeholder), patch.object(
+            uploader, "_clear_region_placeholder"
+        ), patch.object(upload, "_copy_to_clipboard", return_value=True):
+            uploader._process_lines(
+                frame,
+                [
+                    "https://myrealt.rip/iZRp3d",
+                    "본문",
+                    "https://myrealt.rip/iZRp3d",
+                ],
+                upload.NAVER_BODY_PLACEHOLDER,
+                self.env.root,
+            )
+
+        waits = [call.args[0] for call in page.wait_for_timeout.call_args_list]
+        self.assertEqual(waits.count(2_000), 2)
+
     def test_write_falls_back_to_default_editor_when_template_is_missing(self) -> None:
         page = MagicMock()
         uploader = upload.NaverTextUploader(page)
@@ -240,22 +456,77 @@ class UploadPlanTests(unittest.TestCase):
     def test_open_profile_context_reuses_live_connector(self) -> None:
         browser = object()
         context = object()
+        profile = {"slot": 1, "profile_path": "C:/safe/naver_1"}
         with patch.object(
             upload,
             "connect_profile_context",
             return_value=(browser, context),
         ), patch.object(
             upload,
+            "open_profile_browser",
+        ), patch.object(
+            upload,
             "_launch_context",
             side_effect=AssertionError("must reuse open connector"),
         ):
             opened, owns_context, retained_browser = upload._open_profile_context(
-                object(), "C:/safe/naver_1", headless=False
+                object(), profile, headless=False
             )
 
         self.assertIs(opened, context)
         self.assertFalse(owns_context)
         self.assertIs(retained_browser, browser)
+
+    def test_open_profile_context_starts_retained_host_instead_of_owned_context(self) -> None:
+        browser = object()
+        context = object()
+        profile = {"slot": 2, "profile_path": "C:/safe/naver_2"}
+        with patch.object(
+            upload,
+            "open_profile_browser",
+            return_value={"status": "opened", "connector_ready": True},
+        ) as open_browser, patch.object(
+            upload,
+            "connect_profile_context",
+            return_value=(browser, context),
+        ), patch.object(
+            upload,
+            "_launch_context",
+            side_effect=AssertionError("visible uploads must use the retained host"),
+        ):
+            opened, owns_context, retained_browser = upload._open_profile_context(
+                object(), profile, headless=False
+            )
+
+        open_browser.assert_called_once_with(profile)
+        self.assertIs(opened, context)
+        self.assertFalse(owns_context)
+        self.assertIs(retained_browser, browser)
+
+    def test_open_profile_context_keeps_explicit_headless_compatibility(self) -> None:
+        context = object()
+        profile = {"slot": 3, "profile_path": "C:/safe/naver_3"}
+        with patch.object(
+            upload,
+            "open_profile_browser",
+            side_effect=AssertionError("headless mode must not open a visible host"),
+        ), patch.object(
+            upload,
+            "connect_profile_context",
+            return_value=None,
+        ), patch.object(
+            upload,
+            "_launch_context",
+            return_value=context,
+        ) as launch:
+            opened, owns_context, retained_browser = upload._open_profile_context(
+                object(), profile, headless=True
+            )
+
+        launch.assert_called_once_with(ANY, "C:/safe/naver_3", headless=True)
+        self.assertIs(opened, context)
+        self.assertTrue(owns_context)
+        self.assertIsNone(retained_browser)
 
     def test_unfinished_draft_prompt_is_cancelled_before_new_editor_entry(self) -> None:
         page = MagicMock()
@@ -372,6 +643,11 @@ class UploadResumeTests(unittest.TestCase):
         key = upload._entry_key(row, "draft")
         self.assertEqual(key, "posts/a.txt|abc|1|draft")
         self.assertNotEqual(key, upload._entry_key(row, "publish"))
+        asset_row = {**row, "asset_manifest_sha256": "def"}
+        self.assertEqual(
+            upload._entry_key(asset_row, "draft"),
+            "posts/a.txt|abc|def|1|draft",
+        )
 
     def test_resume_skips_verified_success_and_uploads_only_pending_item(self) -> None:
         run_dir, profile, plan = self._ready_plan(2)
@@ -386,30 +662,75 @@ class UploadResumeTests(unittest.TestCase):
         upload._save_upload_state(run_dir, "draft", [first_entry], "failed")
 
         context = SimpleNamespace(pages=[object()], close=MagicMock())
+        connector_browser = object()
         uploader_instance = MagicMock()
         uploader_instance.upload.return_value = {
             "status": "success",
             "verified_url": "https://blog.naver.com/owner1/10000",
         }
         with patch.dict(sys.modules, _fake_playwright_modules()), patch.object(
-            upload, "_launch_context", return_value=context
-        ) as launch, patch.object(
+            upload,
+            "_open_profile_context",
+            return_value=(context, False, connector_browser),
+        ) as open_context, patch.object(
             upload, "get_profile", return_value=profile
         ), patch.object(
             upload, "NaverTextUploader", return_value=uploader_instance
         ):
             result = upload.execute_upload(plan, confirm=plan["run_id"], delay=2)
 
-        launch.assert_called_once()
+        open_context.assert_called_once()
         uploader_instance.upload.assert_called_once()
         uploaded_title = uploader_instance.upload.call_args.args[1]
         self.assertEqual(uploaded_title, plan["assignments"][1]["title"])
-        context.close.assert_called_once()
+        context.close.assert_not_called()
         self.assertEqual(result["success_count"], 2)
         self.assertEqual([entry["status"] for entry in result["entries"]], ["success", "success"])
         state = history.load_run(run_dir)
         self.assertEqual(state["uploads"]["status"], "completed")
         self.assertEqual(state["uploads"]["success_count"], 2)
+
+    def test_multiple_profiles_are_processed_in_order_and_left_open(self) -> None:
+        run_dir, profile_one, _single_plan = self._ready_plan(2)
+        profile_two = profiles.add_profile(2, alias="계정2", blog_url="owner2")
+        plan = upload.build_upload_plan(run_dir, "1,2", "draft")
+        upload.save_upload_plan(plan)
+
+        context_one = SimpleNamespace(pages=[object()], close=MagicMock())
+        context_two = SimpleNamespace(pages=[object()], close=MagicMock())
+        uploader_one = MagicMock()
+        uploader_two = MagicMock()
+        uploader_one.upload.return_value = {"status": "success", "verified_url": None}
+        uploader_two.upload.return_value = {"status": "success", "verified_url": None}
+        profile_by_slot = {1: profile_one, 2: profile_two}
+
+        with patch.dict(sys.modules, _fake_playwright_modules()), patch.object(
+            upload,
+            "_open_profile_context",
+            side_effect=[
+                (context_one, False, object()),
+                (context_two, False, object()),
+            ],
+        ) as open_context, patch.object(
+            upload,
+            "get_profile",
+            side_effect=lambda slot: profile_by_slot[int(slot)],
+        ), patch.object(
+            upload,
+            "NaverTextUploader",
+            side_effect=[uploader_one, uploader_two],
+        ):
+            result = upload.execute_upload(plan, confirm=plan["run_id"], delay=2)
+
+        self.assertEqual(
+            [int(call.args[1]["slot"]) for call in open_context.call_args_list],
+            [1, 2],
+        )
+        uploader_one.upload.assert_called_once()
+        uploader_two.upload.assert_called_once()
+        context_one.close.assert_not_called()
+        context_two.close.assert_not_called()
+        self.assertEqual(result["success_count"], 2)
 
     def test_uncertain_previous_upload_blocks_retry_before_browser_launch(self) -> None:
         run_dir, _profile, plan = self._ready_plan(1)
@@ -422,11 +743,11 @@ class UploadResumeTests(unittest.TestCase):
         }
         upload._save_upload_state(run_dir, "draft", [uncertain], "failed")
         with patch.dict(sys.modules, _fake_playwright_modules()), patch.object(
-            upload, "_launch_context", side_effect=AssertionError("must not launch")
-        ) as launch:
+            upload, "_open_profile_context", side_effect=AssertionError("must not open")
+        ) as open_context:
             with self.assertRaisesRegex(ValueError, "prior upload is unverified"):
                 upload.execute_upload(plan, confirm=plan["run_id"])
-        launch.assert_not_called()
+        open_context.assert_not_called()
 
     def test_manual_not_uploaded_resolution_returns_uncertain_entry_to_pending(self) -> None:
         run_dir, _profile, plan = self._ready_plan(1)
@@ -505,13 +826,16 @@ class UploadResumeTests(unittest.TestCase):
         publish_plan = upload.build_upload_plan(run_dir, "1", "publish")
         upload.save_upload_plan(publish_plan)
         context = SimpleNamespace(pages=[object()], close=MagicMock())
+        connector_browser = object()
         uploader_instance = MagicMock()
         uploader_instance.upload.return_value = {
             "status": "success",
             "verified_url": "https://blog.naver.com/owner1/10001",
         }
         with patch.dict(sys.modules, _fake_playwright_modules()), patch.object(
-            upload, "_launch_context", return_value=context
+            upload,
+            "_open_profile_context",
+            return_value=(context, False, connector_browser),
         ), patch.object(
             upload, "get_profile", return_value=profile
         ), patch.object(
@@ -523,6 +847,7 @@ class UploadResumeTests(unittest.TestCase):
 
         uploader_instance.upload.assert_called_once()
         self.assertEqual(uploader_instance.upload.call_args.args[3], "publish")
+        context.close.assert_not_called()
         self.assertEqual(result["success_count"], 1)
         self.assertEqual([entry["mode"] for entry in result["entries"]], ["publish"])
 
@@ -530,17 +855,17 @@ class UploadResumeTests(unittest.TestCase):
         _run_dir, _profile, plan = self._ready_plan(1)
         profiles.edit_profile(1, blog_url="different-owner")
         with patch.dict(sys.modules, _fake_playwright_modules()), patch.object(
-            upload, "_launch_context", side_effect=AssertionError("must not launch")
-        ) as launch:
+            upload, "_open_profile_context", side_effect=AssertionError("must not open")
+        ) as open_context:
             with self.assertRaisesRegex(ValueError, "changed after confirmation"):
                 upload.execute_upload(plan, confirm=plan["run_id"])
-        launch.assert_not_called()
+        open_context.assert_not_called()
 
     def test_browser_launch_failure_appends_upload_failed_event(self) -> None:
         run_dir, _profile, plan = self._ready_plan(1)
         with patch.dict(sys.modules, _fake_playwright_modules()), patch.object(
             upload,
-            "_launch_context",
+            "_open_profile_context",
             side_effect=upload.UploadError("profile busy", code="profile_in_use"),
         ):
             with self.assertRaisesRegex(upload.UploadError, "profile busy"):

@@ -96,29 +96,29 @@ def auth_cookies(expires: float) -> list[dict[str, object]]:
 
 
 class NaverSessionTests(unittest.TestCase):
-    def test_session_cookies_are_promoted_inside_same_context(self) -> None:
+    def test_session_only_cookies_are_promoted_in_the_same_profile(self) -> None:
         context = FakeContext(auth_cookies(-1))
         page = FakePage()
 
         self.assertTrue(naver_session.persistent_login_ready(context, page))
 
-        self.assertEqual([row["name"] for row in context.added], ["NID_AUT", "NID_SES"])
-        self.assertTrue(all(float(row["expires"]) > time.time() for row in context.added))
+        self.assertEqual({item["name"] for item in context.added}, set(naver_session.AUTH_COOKIE_NAMES))
         self.assertEqual(page.waits, [1_000])
 
     def test_long_lived_persistent_cookies_are_not_rewritten(self) -> None:
-        context = FakeContext(auth_cookies(time.time() + naver_session.PERSIST_SECONDS * 2))
+        context = FakeContext(auth_cookies(time.time() + 180 * 24 * 60 * 60))
         self.assertTrue(naver_session.persistent_login_ready(context, FakePage()))
         self.assertEqual(context.added, [])
 
-    def test_near_expiry_persistent_cookies_are_renewed_on_use(self) -> None:
+    def test_near_expiry_persistent_cookies_are_left_unchanged(self) -> None:
         context = FakeContext(auth_cookies(time.time() + 86_400))
         self.assertTrue(naver_session.persistent_login_ready(context, FakePage()))
-        self.assertTrue(
-            all(
-                float(row["expires"]) > time.time() + naver_session.RENEW_BEFORE_SECONDS
-                for row in context.added
-            )
+        self.assertEqual(context.added, [])
+
+    def test_visible_login_ui_prevents_a_reusable_profile_result(self) -> None:
+        context = FakeContext(auth_cookies(time.time() + 86_400))
+        self.assertFalse(
+            naver_session.persistent_login_ready(context, FakePage(login_visible=True))
         )
 
     def test_expired_positive_cookies_are_not_resurrected(self) -> None:

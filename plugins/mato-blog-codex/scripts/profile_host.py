@@ -1,0 +1,139 @@
+"""Run one visible Mato Chrome profile through Playwright's persistent context.
+
+This small detached host mirrors the lifecycle used by the Mato Helper app:
+Playwright creates and owns the exact numbered profile directory for as long
+as the visible Chrome window exists.  It never reads another project's
+profile, never prints authentication material, and only keeps Naver's normal
+login state inside the profile selected by the caller.
+"""
+
+from __future__ import annotations
+
+import argparse
+import signal
+import sys
+from collections.abc import Callable
+from pathlib import Path
+from typing import Sequence
+
+from naver_session import ensure_keep_login_checked, is_naver_login_required, persistent_login_ready
+from profile_runtime import clear_profile_state, write_profile_state
+
+
+def _user_agent() -> str:
+    if sys.platform == "darwin":
+        return (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
+    return (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
+
+
+def run(profile_path: str | Path, target_url: str) -> int:
+    """Keep a visible browser alive and persist a completed normal login."""
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:  # pragma: no cover - bootstrap owns dependency setup.
+        raise RuntimeError("Playwright가 설치되어 있지 않습니다.") from exc
+
+    profile = Path(profile_path).expanduser().resolve(strict=False)
+    if not profile.is_dir():
+        raise FileNotFoundError(f"프로필 폴더가 없습니다: {profile}")
+
+    launch_args = [
+        "--window-size=1280,1024",
+        "--window-position=0,0",
+        "--disable-blink-features=AutomationControlled",
+        "--remote-debugging-address=127.0.0.1",
+        "--remote-debugging-port=0",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+    stop_requested = False
+
+    def request_stop(_signum: int, _frame: object) -> None:
+        nonlocal stop_requested
+        stop_requested = True
+
+    previous_handlers = {
+        signum: signal.signal(signum, request_stop)
+        for signum in (signal.SIGTERM, signal.SIGINT)
+    }
+    try:
+        return _run_context(profile, target_url, launch_args, stop_requested=lambda: stop_requested)
+    finally:
+        for signum, previous in previous_handlers.items():
+            signal.signal(signum, previous)
+
+
+def _run_context(
+    profile: Path,
+    target_url: str,
+    launch_args: list[str],
+    *,
+    stop_requested: Callable[[], bool],
+) -> int:
+    """Own Chrome until its window closes or the host receives a stop signal."""
+
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        context = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(profile),
+            channel="chrome",
+            headless=False,
+            args=launch_args,
+            user_agent=_user_agent(),
+            locale="ko-KR",
+            timezone_id="Asia/Seoul",
+            viewport={"width": 1280, "height": 1024},
+        )
+        try:
+            write_profile_state(profile, status="starting")
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
+            while not stop_requested():
+                pages = [item for item in context.pages if not item.is_closed()]
+                if not pages:
+                    return 0
+                page = pages[-1]
+                if is_naver_login_required(page, context):
+                    # The host owns this context, so it can safely arm
+                    # Naver's standard keep-login option without a second
+                    # Playwright process attaching to (and potentially
+                    # disconnecting) the visible browser.
+                    ensure_keep_login_checked(page)
+                    write_profile_state(profile, status="needs_login")
+                else:
+                    # Same-profile persistence only; the helper function never
+                    # exposes authentication values outside this context.
+                    if persistent_login_ready(context, page):
+                        write_profile_state(profile, status="ready")
+                    else:
+                        write_profile_state(profile, status="needs_login")
+                page.wait_for_timeout(1_000)
+            return 0
+        finally:
+            context.close()
+            clear_profile_state(profile)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Keep one Mato Naver profile window alive.")
+    parser.add_argument("--profile-path", required=True)
+    parser.add_argument("--target-url", required=True)
+    args = parser.parse_args(argv)
+    try:
+        return run(args.profile_path, args.target_url)
+    except Exception:
+        # The parent detects startup success through its loopback DevTools
+        # endpoint. Do not write errors or browser state into a user's shell.
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

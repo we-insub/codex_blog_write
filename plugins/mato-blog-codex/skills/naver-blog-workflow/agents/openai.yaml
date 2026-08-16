@@ -1,4 +1,4 @@
 interface:
   display_name: "Mato Naver Blog Workflow"
-  short_description: "네이버 검색·이미지 다운로드부터 원고 생성과 프로필 업로드까지 관리"
-  default_prompt: "Use $naver-blog-workflow for 프로필1 서울맛집."
+  short_description: "네이버·마이리얼트립 원고 생성과 사진역순 재작성"
+  default_prompt: "Use $naver-blog-workflow to create a Naver draft from my product URL or rewrite raw Naver photo captions with 사진역순."
