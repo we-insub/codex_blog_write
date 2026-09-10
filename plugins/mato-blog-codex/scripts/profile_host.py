@@ -16,7 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Sequence
 
-from naver_session import ensure_keep_login_checked, is_naver_login_required, persistent_login_ready
+from profile_session import ProfileSession
 from profile_runtime import clear_profile_state, write_profile_state
 
 
@@ -92,34 +92,38 @@ def _run_context(
             timezone_id="Asia/Seoul",
             viewport={"width": 1280, "height": 1024},
         )
+        session = None
         try:
             write_profile_state(profile, status="starting")
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
+            session = ProfileSession(context, page, target_url)
             while not stop_requested():
                 pages = [item for item in context.pages if not item.is_closed()]
                 if not pages:
                     return 0
-                page = pages[-1]
-                if is_naver_login_required(page, context):
-                    # The host owns this context, so it can safely arm
-                    # Naver's standard keep-login option without a second
-                    # Playwright process attaching to (and potentially
-                    # disconnecting) the visible browser.
-                    ensure_keep_login_checked(page)
-                    write_profile_state(profile, status="needs_login")
-                else:
-                    # Same-profile persistence only; the helper function never
-                    # exposes authentication values outside this context.
-                    if persistent_login_ready(context, page):
-                        write_profile_state(profile, status="ready")
-                    else:
-                        write_profile_state(profile, status="needs_login")
-                page.wait_for_timeout(1_000)
+                try:
+                    status = session.poll()
+                except Exception:
+                    # Redirects, temporary network errors and a closed tab
+                    # must not tear down the owner of a just-saved login.
+                    status = "error"
+                write_profile_state(profile, status=status, blog_id=session.blog_id if status == "ready" else None)
+                try:
+                    pages[0].wait_for_timeout(1_000)
+                except Exception:
+                    if not any(not item.is_closed() for item in context.pages):
+                        return 0
             return 0
         finally:
-            context.close()
-            clear_profile_state(profile)
+            try:
+                if session is not None:
+                    session.preserve_before_close()
+            except Exception:
+                pass  # A user may already have closed the browser normally.
+            try:
+                context.close()
+            finally:
+                clear_profile_state(profile)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

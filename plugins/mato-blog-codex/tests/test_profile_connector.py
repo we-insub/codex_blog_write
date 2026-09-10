@@ -14,6 +14,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import profile_connector
+import profile_runtime
 
 
 class ProfileConnectorTests(unittest.TestCase):
@@ -189,6 +190,69 @@ class ProfileConnectorTests(unittest.TestCase):
             with patch.object(profile_connector, "is_windows", return_value=False):
                 self.assertTrue(profile_connector.profile_lock_exists(profile))
 
+    def test_fresh_ready_status_without_endpoint_does_not_skip_failed_launch(self) -> None:
+        with TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "browser_profiles" / "naver_1"
+            profile.mkdir(parents=True)
+            profile_runtime.write_profile_state(profile, status="ready", pid=12345)
+            process = MagicMock(pid=23456)
+            process.poll.return_value = 1
+            with patch.object(profile_connector, "connector_endpoint", return_value=None), patch.object(
+                profile_connector, "profile_lock_exists", return_value=False
+            ), patch.object(profile_connector.subprocess, "Popen", return_value=process) as popen:
+                with self.assertRaisesRegex(RuntimeError, "연결기가 준비되지 않았습니다"):
+                    profile_connector.open_profile_browser({"slot": 1, "profile_path": str(profile)})
+            popen.assert_called_once()
+
+    def test_starting_status_waits_for_a_verified_endpoint(self) -> None:
+        with TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "browser_profiles" / "naver_1"
+            profile.mkdir(parents=True)
+            profile_runtime.write_profile_state(profile, status="starting", pid=12345)
+            process = MagicMock(pid=12345)
+            process.poll.return_value = None
+            with patch.object(
+                profile_connector,
+                "connector_endpoint",
+                side_effect=[None, None, "http://127.0.0.1:43123"],
+            ) as endpoint, patch.object(
+                profile_connector, "profile_lock_exists", return_value=False
+            ), patch.object(profile_connector.subprocess, "Popen", return_value=process), patch.object(
+                profile_connector.time, "sleep"
+            ) as sleep:
+                result = profile_connector.open_profile_browser({"slot": 1, "profile_path": str(profile)})
+            self.assertTrue(result["connector_ready"])
+            self.assertEqual(endpoint.call_count, 3)
+            sleep.assert_called_once_with(0.2)
+
+    def test_host_exit_during_endpoint_probe_is_not_reported_as_ready(self) -> None:
+        with TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "browser_profiles" / "naver_1"
+            profile.mkdir(parents=True)
+            process = MagicMock(pid=12345)
+            process.poll.side_effect = [None, 1, 1]
+            with patch.object(
+                profile_connector,
+                "connector_endpoint",
+                side_effect=[None, "http://127.0.0.1:43123"],
+            ), patch.object(
+                profile_connector, "profile_lock_exists", return_value=False
+            ), patch.object(profile_connector.subprocess, "Popen", return_value=process):
+                with self.assertRaisesRegex(RuntimeError, "연결기가 준비되지 않았습니다"):
+                    profile_connector.open_profile_browser({"slot": 1, "profile_path": str(profile)})
+
+    def test_verified_existing_endpoint_does_not_launch_another_host(self) -> None:
+        with TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "browser_profiles" / "naver_1"
+            profile.mkdir(parents=True)
+            with patch.object(
+                profile_connector, "connector_endpoint", return_value="http://127.0.0.1:43123"
+            ), patch.object(profile_connector.subprocess, "Popen") as popen:
+                result = profile_connector.open_profile_browser({"slot": 1, "profile_path": str(profile)})
+            self.assertEqual(result["status"], "already_open")
+            self.assertTrue(result["connector_ready"])
+            popen.assert_not_called()
+
     def _assert_launch_arguments(
         self,
         *,
@@ -200,6 +264,7 @@ class ProfileConnectorTests(unittest.TestCase):
             profile = Path(temporary) / "browser_profiles" / "naver_27"
             profile.mkdir(parents=True)
             process = MagicMock(pid=27123)
+            process.poll.return_value = None
             connector_results = [None, "http://127.0.0.1:43127"]
             with patch.object(
                 profile_connector,

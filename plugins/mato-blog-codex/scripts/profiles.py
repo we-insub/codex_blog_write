@@ -26,6 +26,7 @@ try:
         browser_profiles_dir,
         canonical_naver_blog_url,
         canonical_naver_write_url,
+        extract_naver_blog_id,
         parse_positive_slots,
         profile_catalog_path,
         read_json,
@@ -45,6 +46,7 @@ except ImportError:  # Direct execution: ``python scripts/profiles.py``.
         browser_profiles_dir,
         canonical_naver_blog_url,
         canonical_naver_write_url,
+        extract_naver_blog_id,
         parse_positive_slots,
         profile_catalog_path,
         read_json,
@@ -624,19 +626,25 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
         file=sys.stderr,
     )
     last_status = "starting"
-    state = read_profile_state(user_data_dir)
-    if state is None:
+    if connector_endpoint(user_data_dir) is None:
         open_profile_browser(profile)
+    expected_blog_id = extract_naver_blog_id(str(profile["write_url"])) if profile.get("write_url") else ""
     while time.monotonic() < deadline:
         state = read_profile_state(user_data_dir)
         if state is not None:
             last_status = str(state["status"])
             if last_status == "ready":
+                if connector_endpoint(user_data_dir) is None:
+                    return "error"
+                if str(state.get("blog_id") or "").casefold() != expected_blog_id.casefold():
+                    return "error"
                 return "ready"
+            if last_status == "logged_in" and not profile.get("write_url"):
+                return "logged_in" if connector_endpoint(user_data_dir) else "error"
             if last_status == "error":
                 return "error"
         time.sleep(0.5)
-    return "needs_login" if last_status == "needs_login" else "error"
+    return last_status if last_status in {"needs_login", "logged_in"} else "error"
 
 
 def open_profiles(profile_slots: str | Iterable[int | str]) -> list[dict[str, Any]]:

@@ -383,7 +383,7 @@ class UploadPlanTests(unittest.TestCase):
                 upload.NAVER_BODY_PLACEHOLDER,
                 self.env.root,
             )
-        create_text_block.assert_called_once_with()
+        create_text_block.assert_called_once_with(frame)
 
     def test_process_lines_waits_two_seconds_after_each_product_url(self) -> None:
         page = MagicMock()
@@ -661,7 +661,7 @@ class UploadResumeTests(unittest.TestCase):
         }
         upload._save_upload_state(run_dir, "draft", [first_entry], "failed")
 
-        context = SimpleNamespace(pages=[object()], close=MagicMock())
+        context = SimpleNamespace(pages=[object()], new_page=MagicMock(), close=MagicMock())
         connector_browser = object()
         uploader_instance = MagicMock()
         uploader_instance.upload.return_value = {
@@ -696,8 +696,8 @@ class UploadResumeTests(unittest.TestCase):
         plan = upload.build_upload_plan(run_dir, "1,2", "draft")
         upload.save_upload_plan(plan)
 
-        context_one = SimpleNamespace(pages=[object()], close=MagicMock())
-        context_two = SimpleNamespace(pages=[object()], close=MagicMock())
+        context_one = SimpleNamespace(pages=[object()], new_page=MagicMock(), close=MagicMock())
+        context_two = SimpleNamespace(pages=[object()], new_page=MagicMock(), close=MagicMock())
         uploader_one = MagicMock()
         uploader_two = MagicMock()
         uploader_one.upload.return_value = {"status": "success", "verified_url": None}
@@ -825,7 +825,7 @@ class UploadResumeTests(unittest.TestCase):
 
         publish_plan = upload.build_upload_plan(run_dir, "1", "publish")
         upload.save_upload_plan(publish_plan)
-        context = SimpleNamespace(pages=[object()], close=MagicMock())
+        context = SimpleNamespace(pages=[object()], new_page=MagicMock(), close=MagicMock())
         connector_browser = object()
         uploader_instance = MagicMock()
         uploader_instance.upload.return_value = {
@@ -875,6 +875,158 @@ class UploadResumeTests(unittest.TestCase):
         self.assertEqual(state["status"], "failed")
         self.assertEqual(state["events"][-1]["stage"], "upload_failed")
         self.assertEqual(state["events"][-1]["details"]["error_code"], "profile_in_use")
+
+
+class UploadEditorEntryTests(unittest.TestCase):
+    target = "https://blog.naver.com/owner1?Redirect=Write&"
+
+    def setUp(self) -> None:
+        self.page = MagicMock()
+        self.page.url = "about:blank"
+        self.page.frames = []
+        self.page.goto.side_effect = lambda url, **_kwargs: setattr(self.page, "url", url)
+        self.uploader = upload.NaverTextUploader(self.page)
+        self.login = self._patch(self.uploader, "_wait_for_manual_login")
+        self._patch(upload, "_check_restriction")
+        self.security = self._patch(upload, "has_security_challenge", return_value=False)
+        self.ready = self._patch(upload, "is_editor_ready", return_value=True)
+        self.dismiss = self._patch(upload, "_dismiss_unfinished_draft_prompt", return_value=False)
+        self.template = self._patch(self.uploader, "_apply_mato_template", return_value=False)
+        self.title = object()
+        self._patch(upload, "_find_visible", side_effect=[None, self.title])
+
+    def _patch(self, target, name, **kwargs):  # type: ignore[no-untyped-def]
+        patcher = patch.object(target, name, **kwargs)
+        self.addCleanup(patcher.stop)
+        return patcher.start()
+
+    def test_saved_session_opens_requested_editor_once_and_waits_for_readiness(self) -> None:
+        result = self.uploader.open_editor(self.target)
+
+        self.assertIs(result[1], self.title)
+        self.page.goto.assert_called_once_with(self.target, wait_until="domcontentloaded", timeout=60_000)
+        self.page.wait_for_selector.assert_called_once_with(
+            "iframe#mainFrame", state="attached", timeout=20_000
+        )
+        self.ready.assert_called_once_with(self.page, self.target)
+        self.template.assert_called_once()
+
+    def test_manual_login_landing_on_home_returns_to_requested_editor_once(self) -> None:
+        self.login.side_effect = lambda: setattr(self.page, "url", "https://www.naver.com/")
+
+        self.uploader.open_editor(self.target)
+
+        self.assertEqual([call.args[0] for call in self.page.goto.call_args_list], [self.target, self.target])
+        self.login.assert_called_once()
+
+    def test_manual_login_restoring_write_redirect_is_not_navigated_again(self) -> None:
+        self.login.side_effect = lambda: setattr(
+            self.page, "url", "https://blog.naver.com/PostWriteForm.naver?blogId=owner1"
+        )
+
+        self.uploader.open_editor(self.target)
+
+        self.page.goto.assert_called_once()
+
+    def test_slow_editor_controls_are_polled_without_reloading(self) -> None:
+        self.ready.side_effect = [False, False, True]
+
+        self.uploader.open_editor(self.target)
+
+        self.assertEqual(self.ready.call_count, 3)
+        waits = [call.args[0] for call in self.page.wait_for_timeout.call_args_list]
+        self.assertEqual(waits.count(250), 2)
+        self.page.goto.assert_called_once()
+
+    def test_late_resume_popup_is_checked_after_editor_readiness_before_template(self) -> None:
+        events = []
+        original_check = self.uploader._check_editor_access
+
+        def check_access(target_url):
+            events.append("access")
+            original_check(target_url)
+
+        def dismiss_popup(_page):
+            loaded = "frame_loaded" in events
+            events.append("dismiss_late" if loaded else "dismiss_initial")
+            return loaded
+
+        self.page.wait_for_selector.side_effect = lambda *_args, **_kwargs: events.append("frame_loaded")
+        self.ready.side_effect = lambda *_args: events.append("editor_ready") or True
+        self.dismiss.side_effect = dismiss_popup
+        self.template.side_effect = lambda _frame: events.append("template") or False
+        with patch.object(self.uploader, "_check_editor_access", side_effect=check_access):
+            self.uploader.open_editor(self.target)
+
+        self.assertEqual(events, [
+            "access", "dismiss_initial", "frame_loaded", "access", "editor_ready",
+            "access", "dismiss_late", "template",
+        ])
+        self.dismiss.assert_called_with(self.page)
+        self.assertEqual(self.dismiss.call_count, 2)
+
+    def test_readiness_timeout_stops_before_template_or_input(self) -> None:
+        self.ready.return_value = False
+        with patch.object(upload.time, "monotonic", side_effect=[0.0, 0.0, 21.0]):
+            with self.assertRaises(upload.UploadError) as caught:
+                self.uploader.open_editor(self.target)
+
+        self.assertEqual(caught.exception.code, "editor_structure_changed")
+        self.template.assert_not_called()
+
+    def test_missing_editor_iframe_stops_before_template_or_input(self) -> None:
+        self.page.wait_for_selector.side_effect = TimeoutError("frame did not load")
+
+        with self.assertRaises(upload.UploadError) as caught:
+            self.uploader.open_editor(self.target)
+
+        self.assertEqual(caught.exception.code, "editor_structure_changed")
+        self.template.assert_not_called()
+
+    def test_top_level_owner_mismatch_stops_before_draft_dismiss_or_template(self) -> None:
+        self.login.side_effect = lambda: setattr(self.page, "url", "https://blog.naver.com/other?Redirect=Write&")
+
+        with self.assertRaises(upload.UploadError) as caught:
+            self.uploader.open_editor(self.target)
+
+        self.assertEqual(caught.exception.code, "owner_mismatch")
+        self.dismiss.assert_not_called()
+        self.template.assert_not_called()
+        self.page.goto.assert_called_once()
+
+    def test_iframe_owner_mismatch_stops_even_with_matching_outer_url(self) -> None:
+        self.page.frames = [SimpleNamespace(url="https://blog.naver.com/PostWriteForm.naver?blogId=other")]
+
+        with self.assertRaises(upload.UploadError) as caught:
+            self.uploader.open_editor(self.target)
+
+        self.assertEqual(caught.exception.code, "owner_mismatch")
+        self.dismiss.assert_not_called()
+        self.template.assert_not_called()
+
+    def test_owner_change_during_editor_load_is_checked_before_template(self) -> None:
+        def redirect_during_load(*_args):
+            self.page.frames = [SimpleNamespace(url="https://blog.naver.com/PostWriteForm.naver?blogId=other")]
+            return False
+
+        self.ready.side_effect = redirect_during_load
+        with self.assertRaises(upload.UploadError) as caught:
+            self.uploader.open_editor(self.target)
+
+        self.assertEqual(caught.exception.code, "owner_mismatch")
+        self.template.assert_not_called()
+
+    def test_challenge_after_login_blocks_home_recovery_navigation(self) -> None:
+        self.login.side_effect = lambda: setattr(self.page, "url", "https://www.naver.com/")
+        self.security.return_value = True
+
+        with self.assertRaises(upload.UploadError) as caught:
+            self.uploader.open_editor(self.target)
+
+        self.assertEqual(caught.exception.code, "captcha_or_access_restricted")
+        self.page.goto.assert_called_once()
+        self.dismiss.assert_not_called()
+        self.template.assert_not_called()
 
 
 if __name__ == "__main__":

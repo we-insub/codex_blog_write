@@ -201,6 +201,24 @@ class ProfileCatalogTests(unittest.TestCase):
             ("https://www.naver.com", "https://blog.naver.com/owner1?Redirect=Write&"),
         )
 
+    def test_login_check_requires_live_connector_and_matching_ready_blog(self) -> None:
+        profile = profiles.add_profile(1, alias="계정", blog_url="owner1")
+        for blog_id, expected in (("owner1", "ready"), ("other", "error"), ("", "error")):
+            with self.subTest(blog_id=blog_id), patch.object(profiles, "connector_endpoint", return_value="http://127.0.0.1:43123"), patch.object(profiles, "read_profile_state", return_value={"status": "ready", "blog_id": blog_id}), patch.object(profiles, "open_profile_browser") as opened:
+                self.assertEqual(profiles._interactive_login_check(profile, 1), expected)
+                opened.assert_not_called()
+
+    def test_login_check_does_not_accept_stale_ready_without_browser(self) -> None:
+        profile = profiles.add_profile(1, alias="계정", blog_url="owner1")
+        with patch.object(profiles, "connector_endpoint", return_value=None), patch.object(profiles, "read_profile_state", return_value={"status": "ready", "blog_id": "owner1"}), patch.object(profiles, "open_profile_browser") as opened:
+            self.assertEqual(profiles._interactive_login_check(profile, 1), "error")
+            opened.assert_called_once_with(profile)
+
+    def test_login_only_profile_reports_logged_in_separately_from_editor(self) -> None:
+        profile = profiles.add_profile(1, alias="계정")
+        with patch.object(profiles, "connector_endpoint", return_value="http://127.0.0.1:43123"), patch.object(profiles, "read_profile_state", return_value={"status": "logged_in"}):
+            self.assertEqual(profiles._interactive_login_check(profile, 1), "logged_in")
+
     def test_profile_without_blog_url_opens_login_only(self) -> None:
         profile = profiles.add_profile(1, alias="계정")
         self.assertEqual(

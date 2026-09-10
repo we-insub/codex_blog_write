@@ -20,12 +20,6 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
-try:
-    from .profile_runtime import read_profile_state
-except ImportError:  # Direct execution from the scripts directory.
-    from profile_runtime import read_profile_state  # type: ignore[no-redef]
-
-
 DEVTOOLS_ACTIVE_PORT = "DevToolsActivePort"
 PROFILE_LOCK_NAMES = ("SingletonLock", "lockfile")
 
@@ -193,14 +187,8 @@ def open_profile_browser(
         raise RuntimeError(
             f"프로필 {profile['slot']} 폴더가 없습니다. 먼저 프로필을 생성해 주세요: {profile_path}"
         )
-    runtime_state = read_profile_state(profile_path)
-    if runtime_state is not None:
-        return {
-            "slot": int(profile["slot"]),
-            "profile_path": str(profile_path),
-            "status": "already_open",
-            "connector_ready": True,
-        }
+    # A recent host status is not proof that Chrome is still reachable. The
+    # host can exit before cleaning it up, or still be starting its connector.
     existing = connector_endpoint(profile_path)
     if existing:
         return {
@@ -243,16 +231,12 @@ def open_profile_browser(
     )
     deadline = time.monotonic() + max(3.0, float(timeout_seconds))
     while time.monotonic() < deadline:
-        if read_profile_state(profile_path) is not None:
-            return {
-                "slot": int(profile["slot"]),
-                "profile_path": str(profile_path),
-                "status": "opened",
-                "connector_ready": True,
-                "process_id": int(process.pid),
-            }
+        if process.poll() is not None:
+            break
         endpoint = connector_endpoint(profile_path)
-        if endpoint:
+        # Recheck after the endpoint probe, which can take long enough for a
+        # failed host to exit while Chrome's endpoint is still winding down.
+        if endpoint and process.poll() is None:
             return {
                 "slot": int(profile["slot"]),
                 "profile_path": str(profile_path),

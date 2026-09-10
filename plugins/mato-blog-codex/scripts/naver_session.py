@@ -8,6 +8,7 @@ catalog or run history.
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Mapping
 
@@ -45,13 +46,14 @@ def _auth_cookie_state(context: Any) -> tuple[bool, bool, dict[str, Mapping[str,
         if raw_expires is None or raw_expires == "":
             raw_expires = -1
         try:
-            return float(raw_expires)
+            expires = float(raw_expires)
+            return expires if math.isfinite(expires) else None
         except (TypeError, ValueError):
             return None
 
     def is_current(cookie: Mapping[str, Any]) -> bool:
         expires = expiry_value(cookie)
-        return expires is not None and (expires < 0 or expires > now)
+        return bool(cookie.get("value")) and expires is not None and (expires == -1 or expires > now)
 
     def is_persistent(cookie: Mapping[str, Any]) -> bool:
         expires = expiry_value(cookie)
@@ -199,8 +201,11 @@ def persist_naver_auth_cookies(context: Any, page: Any) -> bool:
             expires = float(raw_expiry if raw_expiry not in (None, "") else -1)
         except (TypeError, ValueError):
             expires = -1
-        if expires <= now + 60:
-            expires = now + (30 * 24 * 60 * 60)
+        # Only session-only cookies need local persistence. Never extend a
+        # server-specified expiry, including a still-valid near-expiry cookie.
+        if expires != -1:
+            continue
+        expires = now + (30 * 24 * 60 * 60)
         item: dict[str, Any] = {
             "name": name,
             "value": str(cookie.get("value") or ""),
@@ -216,8 +221,9 @@ def persist_naver_auth_cookies(context: Any, page: Any) -> bool:
         promoted.append(item)
 
     try:
-        context.add_cookies(promoted)
-        if page is not None:
+        if promoted:
+            context.add_cookies(promoted)
+        if promoted and page is not None:
             page.wait_for_timeout(1_000)
     except Exception:
         return False

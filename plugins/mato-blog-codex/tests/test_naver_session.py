@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import time
 import unittest
+from unittest.mock import patch
 
 from _support import SCRIPTS_DIR
 
@@ -114,6 +115,31 @@ class NaverSessionTests(unittest.TestCase):
         context = FakeContext(auth_cookies(time.time() + 86_400))
         self.assertTrue(naver_session.persistent_login_ready(context, FakePage()))
         self.assertEqual(context.added, [])
+
+    def test_server_expiry_is_never_extended_at_the_readiness_boundary(self) -> None:
+        with patch.object(naver_session.time, "time", return_value=1_000):
+            for remaining in (0, 1, 59, 60, 61):
+                with self.subTest(remaining=remaining):
+                    context = FakeContext(auth_cookies(1_000 + remaining))
+                    self.assertEqual(naver_session.persistent_login_ready(context, FakePage()), remaining > 60)
+                    self.assertEqual(context.added, [])
+
+    def test_mixed_pair_only_promotes_session_cookie(self) -> None:
+        cookies = auth_cookies(time.time() + 86_400)
+        cookies[0]["expires"] = -1
+        context = FakeContext(cookies)
+        self.assertTrue(naver_session.persistent_login_ready(context, FakePage()))
+        self.assertEqual([row["name"] for row in context.added], [cookies[0]["name"]])
+        self.assertEqual(context.cookie_rows[1], cookies[1])
+
+    def test_invalid_expiry_and_empty_values_are_not_authenticated(self) -> None:
+        for expires in (-2, float("nan"), float("inf"), "invalid"):
+            context = FakeContext(auth_cookies(expires))
+            self.assertFalse(naver_session.persistent_login_ready(context, FakePage()))
+            self.assertEqual(context.added, [])
+        cookies = auth_cookies(-1)
+        cookies[0]["value"] = ""
+        self.assertFalse(naver_session.has_naver_login(FakeContext(cookies)))
 
     def test_visible_login_ui_prevents_a_reusable_profile_result(self) -> None:
         context = FakeContext(auth_cookies(time.time() + 86_400))

@@ -14,11 +14,12 @@ import unicodedata
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import parse_qs, urlsplit
 
 try:
     from .collect import normalize_naver_post_url
     from .history import append_event, update_run
-    from .mato_common import load_run, now_iso, parse_positive_slots
+    from .mato_common import extract_naver_blog_id, load_run, now_iso, parse_positive_slots
     from .naver_session import (
         ensure_keep_login_checked,
         is_naver_login_required,
@@ -26,11 +27,12 @@ try:
     )
     from .profiles import get_profile, round_robin_assign
     from .profile_connector import connect_profile_context, open_profile_browser
+    from .profile_session import has_security_challenge, is_editor_ready
     from .validate_posts import parse_mato_text, verify_validation_manifest
 except ImportError:
     from collect import normalize_naver_post_url  # type: ignore[no-redef]
     from history import append_event, update_run  # type: ignore[no-redef]
-    from mato_common import load_run, now_iso, parse_positive_slots  # type: ignore[no-redef]
+    from mato_common import extract_naver_blog_id, load_run, now_iso, parse_positive_slots  # type: ignore[no-redef]
     from naver_session import (  # type: ignore[no-redef]
         ensure_keep_login_checked,
         is_naver_login_required,
@@ -41,6 +43,7 @@ except ImportError:
         connect_profile_context,
         open_profile_browser,
     )
+    from profile_session import has_security_challenge, is_editor_ready  # type: ignore[no-redef]
     from validate_posts import parse_mato_text, verify_validation_manifest  # type: ignore[no-redef]
 
 
@@ -78,6 +81,7 @@ TABLE_DELETE_DELAY_MS = 2_500
 DEFAULT_LINK_CARD_WAIT_MS = 4_000
 PRODUCT_LINK_CARD_WAIT_MS = 2_000
 IMAGE_UPLOAD_TIMEOUT_MS = 60_000
+EDITOR_ENTRY_TIMEOUT_MS = 20_000
 EDITOR_IMAGE_COMPONENT_SELECTOR = (
     ".se-component.se-image, .se-component[data-module='image']"
 )
@@ -574,6 +578,45 @@ def _page_text(page: Any) -> str:
         return ""
 
 
+def _editor_page_urls(page: Any) -> list[str]:
+    return [str(page.url)] + [str(frame.url) for frame in getattr(page, "frames", [])]
+
+
+def _assert_editor_target(page: Any, target_url: str) -> None:
+    """Reject explicit account/target redirects before changing editor state."""
+
+    expected = extract_naver_blog_id(target_url).casefold()
+    for url in _editor_page_urls(page):
+        parsed = urlsplit(url)
+        if parsed.hostname == "section.blog.naver.com" or parsed.path.lower().endswith("/bloghome.naver"):
+            raise UploadError("The logged-in account does not own the configured blog.", code="owner_mismatch")
+        if parsed.hostname not in {"blog.naver.com", "m.blog.naver.com"}:
+            continue
+        try:
+            actual = extract_naver_blog_id(url).casefold()
+        except ValueError:
+            continue
+        if actual != expected:
+            raise UploadError("The opened editor belongs to a different blog.", code="owner_mismatch")
+
+
+def _has_write_route(page: Any) -> bool:
+    """Distinguish a pending editor load from a completed login on the home page."""
+
+    for url in _editor_page_urls(page):
+        parsed = urlsplit(url)
+        if parsed.hostname != "blog.naver.com":
+            continue
+        if parsed.path.rstrip("/").lower().endswith(("/postwrite", "/postwriteform.naver")):
+            return True
+        if any(
+            key.lower() == "redirect" and any(value.lower() == "write" for value in values)
+            for key, values in parse_qs(parsed.query).items()
+        ):
+            return True
+    return False
+
+
 def _check_restriction(page: Any) -> None:
     if _is_login_required(page):
         raise UploadError("Naver login is required for this profile.", code="login_required")
@@ -732,11 +775,37 @@ class NaverTextUploader:
         )
 
     def _editor_frame(self) -> Any:
-        if self.page.locator("iframe#mainFrame").count() < 1:
+        try:
+            self.page.wait_for_selector("iframe#mainFrame", state="attached", timeout=EDITOR_ENTRY_TIMEOUT_MS)
+        except Exception as exc:
             raise UploadError(
                 "Naver editor iframe was not found.", code="editor_structure_changed"
-            )
+            ) from exc
         return self.page.frame_locator("iframe#mainFrame")
+
+    def _check_editor_access(self, target_url: str) -> None:
+        if has_security_challenge(self.page):
+            raise UploadError(
+                "Naver displayed a CAPTCHA or access restriction; upload stopped.",
+                code="captcha_or_access_restricted",
+            )
+        _check_restriction(self.page)
+        _assert_editor_target(self.page, target_url)
+
+    def _wait_for_editor_ready(self, target_url: str) -> None:
+        deadline = time.monotonic() + EDITOR_ENTRY_TIMEOUT_MS / 1_000
+        while time.monotonic() < deadline:
+            self._check_editor_access(target_url)
+            try:
+                if is_editor_ready(self.page, target_url):
+                    return
+            except Exception:
+                pass  # Editor scopes can detach while Naver finishes a redirect.
+            self.page.wait_for_timeout(250)
+        raise UploadError(
+            "The configured Naver writing editor did not become ready.",
+            code="editor_structure_changed",
+        )
 
     @staticmethod
     def _exact_text(scope: Any, value: str, *, timeout: int = 2_000) -> Any | None:
@@ -831,14 +900,18 @@ class NaverTextUploader:
         self.page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
         self.page.wait_for_timeout(4_000)
         self._wait_for_manual_login()
-        _check_restriction(self.page)
-        current = str(self.page.url)
-        if "BlogHome.naver" in current or "section.blog.naver.com" in current:
-            raise UploadError(
-                "The logged-in account does not own the configured blog.", code="owner_mismatch"
-            )
+        self._check_editor_access(target_url)
+        if not _has_write_route(self.page):
+            # A manual login can complete on Naver home without restoring its
+            # original redirect. Return once; never keep reloading an editor.
+            self.page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
+            self._check_editor_access(target_url)
         _dismiss_unfinished_draft_prompt(self.page)
         frame = self._editor_frame()
+        self._wait_for_editor_ready(target_url)
+        self._check_editor_access(target_url)
+        # Naver can create its resume-draft popup after the iframe/editor loads.
+        _dismiss_unfinished_draft_prompt(self.page)
         close_help = _find_visible(
             (frame,), ("button.se-help-panel-close-button",), timeout=1_000
         )
