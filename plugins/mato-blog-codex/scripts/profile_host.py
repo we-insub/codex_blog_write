@@ -47,7 +47,6 @@ def run(profile_path: str | Path, target_url: str) -> int:
     launch_args = [
         "--window-size=1280,1024",
         "--window-position=0,0",
-        "--disable-blink-features=AutomationControlled",
         "--remote-debugging-address=127.0.0.1",
         "--remote-debugging-port=0",
         "--no-first-run",
@@ -95,7 +94,9 @@ def _run_context(
         session = None
         try:
             write_profile_state(profile, status="starting")
-            page = context.pages[0] if context.pages else context.new_page()
+            # Match the app: the owning Playwright context creates the login tab.
+            # Reattached clients are not involved in restoring/checking login.
+            page = context.new_page()
             session = ProfileSession(context, page, target_url)
             while not stop_requested():
                 pages = [item for item in context.pages if not item.is_closed()]

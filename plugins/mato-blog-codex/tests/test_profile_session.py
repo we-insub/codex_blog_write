@@ -105,6 +105,23 @@ class ProfileSessionTests(unittest.TestCase):
         self.assertFalse(session.target_opened)
         self.assertEqual(session.poll(), "ready")
 
+    def test_login_lost_while_redirect_settles_does_not_open_editor(self):
+        session = self.session()
+        session.start()
+        def wait(duration):
+            if duration == 2_000:
+                self.page.authenticated = False
+        self.page.wait_for_timeout = wait
+        self.assertEqual(session.poll(), "needs_login")
+        self.assertNotIn(("goto", TARGET), self.events)
+        self.assertFalse(session.target_opened)
+
+    def test_editor_redirect_gets_app_settle_time_before_ready(self):
+        waits = []
+        self.page.wait_for_timeout = waits.append
+        self.assertEqual(self.session().poll(), "ready")
+        self.assertEqual(waits, [6_500, 2_000, 6_500])
+
     def test_failed_cookie_persistence_cannot_be_ready(self):
         self.persist.side_effect = None
         self.persist.return_value = False
@@ -206,6 +223,7 @@ class ProfileHostLifecycleTests(unittest.TestCase):
         events = []
         page = Page(events)
         context = MagicMock(pages=[page])
+        context.new_page.return_value = page
         context.close.side_effect = lambda: events.append("close")
         playwright = MagicMock()
         playwright.chromium.launch_persistent_context.return_value = context

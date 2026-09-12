@@ -626,12 +626,24 @@ def _interactive_login_check(profile: Mapping[str, Any], timeout_seconds: int) -
         file=sys.stderr,
     )
     last_status = "starting"
+    checked_after = time.time()
+    expected_host_pid = None
     if connector_endpoint(user_data_dir) is None:
-        open_profile_browser(profile)
+        opened = open_profile_browser(profile)
+        if isinstance(opened, dict) and isinstance(opened.get("process_id"), int):
+            expected_host_pid = opened["process_id"]
     expected_blog_id = extract_naver_blog_id(str(profile["write_url"])) if profile.get("write_url") else ""
     while time.monotonic() < deadline:
         state = read_profile_state(user_data_dir)
         if state is not None:
+            # A recent ready file may belong to the previous browser. Require
+            # a poll from this check and, after launch, the new owning host.
+            updated_at = state.get("updated_at")
+            stale = isinstance(updated_at, (int, float)) and updated_at < checked_after
+            wrong_host = expected_host_pid is not None and state.get("pid") != expected_host_pid
+            if stale or wrong_host:
+                time.sleep(0.5)
+                continue
             last_status = str(state["status"])
             if last_status == "ready":
                 if connector_endpoint(user_data_dir) is None:

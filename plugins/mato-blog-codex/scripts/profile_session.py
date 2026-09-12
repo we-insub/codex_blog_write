@@ -125,7 +125,7 @@ class ProfileSession:
             self.has_target = False
 
     def _goto(self, url: str) -> None:
-        self.page.goto(url, wait_until="domcontentloaded", timeout=10_000)
+        self.page.goto(url, wait_until="domcontentloaded", timeout=45_000)
 
     def start(self) -> None:
         # Match Mato Helper's restore-before-editor ordering, using this
@@ -170,7 +170,17 @@ class ProfileSession:
             return "logged_in"
         if not self.target_opened:
             if not is_editor_ready(self.page, self.target_url):
+                # Match the application's login loop: allow the normal login
+                # redirect to finish before opening the configured editor.
+                # Cookie presence can precede completion of that redirect.
+                self.page.wait_for_timeout(2_000)
+                if is_naver_login_required(self.page, self.context):
+                    return "needs_login"
                 self._goto(self.target_url)
+                # DOMContentLoaded is too early for Naver's outer redirect
+                # and editor iframe. The app also waits here before judging
+                # authentication or persisting a successful result.
+                self.page.wait_for_timeout(6_500)
             self.target_opened = True
         if is_naver_login_required(self.page, self.context):
             self.target_opened = False

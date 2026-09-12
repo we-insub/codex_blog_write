@@ -97,6 +97,14 @@ class ProfileCatalogTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             profiles.round_robin_assign(["원고"], "99")
 
+    def test_new_host_does_not_reuse_previous_hosts_ready_result(self) -> None:
+        profiles.add_profile(1, blog_url="owner1")
+        profile = profiles.get_profile(1)
+        old = {"status": "ready", "blog_id": "owner1", "pid": 101, "updated_at": 99}
+        current = {"status": "needs_login", "pid": 202, "updated_at": 101}
+        with patch.object(profiles, "connector_endpoint", side_effect=[None, "http://127.0.0.1:43123"]), patch.object(profiles, "open_profile_browser", return_value={"process_id": 202}), patch.object(profiles, "read_profile_state", side_effect=[old, current]), patch.object(profiles.time, "time", return_value=100), patch.object(profiles.time, "monotonic", side_effect=[0, 0.1, 0.2, 2]), patch.object(profiles.time, "sleep"):
+            self.assertEqual(profiles._interactive_login_check(profile, 1), "needs_login")
+
     def test_check_without_login_never_calls_browser_boundary(self) -> None:
         profiles.add_profile(1, alias="계정", blog_url="owner1")
         with patch.object(

@@ -49,6 +49,7 @@ def _synthetic_auth_cookies() -> list[dict[str, object]]:
             "httpOnly": True,
             "secure": True,
             "sameSite": "Lax",
+            "expires": time.time() + 7 * 86_400,
         }
         for index, name in enumerate(naver_session.AUTH_COOKIE_NAMES, start=1)
     ]
@@ -56,6 +57,30 @@ def _synthetic_auth_cookies() -> list[dict[str, object]]:
 
 @unittest.skipUnless(os.environ.get("MATO_BROWSER_TESTS") == "1", "opt-in Chrome test")
 class ProfileBrowserIntegrationTests(unittest.TestCase):
+    def test_current_keep_login_markup_checks_actual_control_only(self) -> None:
+        from playwright.sync_api import sync_playwright
+        with TemporaryDirectory(prefix="mato-keep-login-test-") as temporary:
+            with sync_playwright() as pw:
+                context = pw.chromium.launch_persistent_context(temporary, channel="chrome", headless=True)
+                try:
+                    page = context.pages[0]
+                    page.set_content("""<div><p>로그인 상태 유지 안내</p>
+                      <input id="loginStay" name="nvlong" type="checkbox" role="checkbox"
+                        aria-checked="false" style="position:absolute;opacity:0"
+                        onchange="this.setAttribute('aria-checked',String(this.checked))">
+                      <label for="loginStay">로그인 상태 유지</label>
+                      <input id="switchIP" type="checkbox" checked><label for="switchIP">IP 보안</label>
+                    </div>""")
+                    for _ in range(2):
+                        self.assertTrue(naver_session.ensure_keep_login_checked(page))
+                        self.assertTrue(page.locator('#loginStay').is_checked())
+                        self.assertEqual(page.locator('#loginStay').get_attribute('aria-checked'), 'true')
+                        self.assertTrue(page.locator('#switchIP').is_checked())
+                    page.set_content('<div>로그인 상태 유지</div>')
+                    self.assertFalse(naver_session.ensure_keep_login_checked(page))
+                finally:
+                    context.close()
+
     def test_session_controller_restores_then_checks_fixture_editor_after_restart(self) -> None:
         from playwright.sync_api import sync_playwright
 
@@ -99,7 +124,7 @@ class ProfileBrowserIntegrationTests(unittest.TestCase):
                         finally:
                             context.close()
 
-    def test_session_cookies_survive_same_disposable_profile_restart(self) -> None:
+    def test_server_persistent_cookies_survive_same_disposable_profile_restart(self) -> None:
         from playwright.sync_api import sync_playwright
 
         with TemporaryDirectory(prefix="mato-profile-browser-test-") as temporary:
@@ -115,7 +140,7 @@ class ProfileBrowserIntegrationTests(unittest.TestCase):
                     page.goto(FIXTURE_URL, wait_until="domcontentloaded")
                     context.add_cookies(_synthetic_auth_cookies())
                     self.assertTrue(naver_session.has_naver_login(context))
-                    self.assertFalse(
+                    self.assertTrue(
                         naver_session.has_naver_login(context, require_persistent=True)
                     )
                     self.assertTrue(naver_session.persistent_login_ready(context, page))

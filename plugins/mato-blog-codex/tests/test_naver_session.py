@@ -97,14 +97,13 @@ def auth_cookies(expires: float) -> list[dict[str, object]]:
 
 
 class NaverSessionTests(unittest.TestCase):
-    def test_session_only_cookies_are_promoted_in_the_same_profile(self) -> None:
+    def test_session_only_cookies_cannot_be_made_restart_safe_by_local_expiry(self) -> None:
         context = FakeContext(auth_cookies(-1))
         page = FakePage()
 
-        self.assertTrue(naver_session.persistent_login_ready(context, page))
-
-        self.assertEqual({item["name"] for item in context.added}, set(naver_session.AUTH_COOKIE_NAMES))
-        self.assertEqual(page.waits, [1_000])
+        self.assertFalse(naver_session.persistent_login_ready(context, page))
+        self.assertEqual(context.added, [])
+        self.assertEqual(page.waits, [])
 
     def test_long_lived_persistent_cookies_are_not_rewritten(self) -> None:
         context = FakeContext(auth_cookies(time.time() + 180 * 24 * 60 * 60))
@@ -124,12 +123,12 @@ class NaverSessionTests(unittest.TestCase):
                     self.assertEqual(naver_session.persistent_login_ready(context, FakePage()), remaining > 60)
                     self.assertEqual(context.added, [])
 
-    def test_mixed_pair_only_promotes_session_cookie(self) -> None:
+    def test_mixed_pair_is_not_rewritten_or_claimed_restart_safe(self) -> None:
         cookies = auth_cookies(time.time() + 86_400)
         cookies[0]["expires"] = -1
         context = FakeContext(cookies)
-        self.assertTrue(naver_session.persistent_login_ready(context, FakePage()))
-        self.assertEqual([row["name"] for row in context.added], [cookies[0]["name"]])
+        self.assertFalse(naver_session.persistent_login_ready(context, FakePage()))
+        self.assertEqual(context.added, [])
         self.assertEqual(context.cookie_rows[1], cookies[1])
 
     def test_invalid_expiry_and_empty_values_are_not_authenticated(self) -> None:
@@ -179,10 +178,58 @@ class NaverSessionTests(unittest.TestCase):
         page = SelectiveFakePage({'a[href*="nid.naver.com/nidlogin.login"]'})
         self.assertTrue(naver_session.is_naver_login_required(page, context))
 
-    def test_keep_login_option_is_selected_in_page(self) -> None:
-        page = FakePage(url="https://nid.naver.com/nidlogin.login")
+    def test_missing_keep_login_control_is_not_success(self) -> None:
+        self.assertFalse(naver_session.ensure_keep_login_checked(FakePage()))
+
+
+class KeepLoginTests(unittest.TestCase):
+    def page(self, control_id="loginStay", *, checked=False, click_works=True):
+        from unittest.mock import MagicMock
+        page = MagicMock()
+        checkbox = MagicMock()
+        checkbox.is_checked.side_effect = lambda **kw: checked_state[0]
+        checkbox.get_attribute.return_value = control_id
+        checked_state = [checked]
+        label = MagicMock()
+        label.is_visible.return_value = True
+        def click(**kwargs):
+            if click_works:
+                checked_state[0] = True
+        label.click.side_effect = click
+        def locator(selector):
+            result = MagicMock()
+            if selector == f'input[type="checkbox"][id="{control_id}"]':
+                result.count.return_value = 1
+                result.first = checkbox
+            elif selector == f'label[for="{control_id}"]':
+                result.count.return_value = 1
+                result.first = label
+            else:
+                result.count.return_value = 0
+            return result
+        page.locator.side_effect = locator
+        return page, checkbox, label
+
+    def test_current_naver_control_is_selected_and_verified(self):
+        page, checkbox, label = self.page()
         self.assertTrue(naver_session.ensure_keep_login_checked(page))
-        self.assertEqual(page.evaluate_calls, 1)
+        label.click.assert_called_once()
+        self.assertEqual(checkbox.is_checked.call_count, 2)
+
+    def test_legacy_keep_control_still_works(self):
+        page, _, label = self.page("keep")
+        self.assertTrue(naver_session.ensure_keep_login_checked(page))
+        label.click.assert_called_once()
+
+    def test_already_checked_control_is_never_toggled_off(self):
+        page, _, label = self.page(checked=True)
+        for _ in range(3):
+            self.assertTrue(naver_session.ensure_keep_login_checked(page))
+        label.click.assert_not_called()
+
+    def test_click_without_state_change_is_not_success(self):
+        page, _, _ = self.page(click_works=False)
+        self.assertFalse(naver_session.ensure_keep_login_checked(page))
 
 
 if __name__ == "__main__":

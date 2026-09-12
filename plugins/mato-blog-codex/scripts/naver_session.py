@@ -109,128 +109,58 @@ def is_naver_login_required(page: Any, context: Any) -> bool:
 
 
 def ensure_keep_login_checked(page: Any) -> bool:
-    """Select Naver's normal keep-login option before a user logs in."""
+    """Check the actual Naver control and verify its resulting state.
+
+    Current Naver uses loginStay/nvlong; older pages used keep. Never click
+    a generic text ancestor: it may contain the whole form without toggling
+    the checkbox, and must not be reported as a successful selection.
+    """
 
     if page is None:
         return False
-    try:
-        return bool(
-            page.evaluate(
-                """() => {
-                    const candidates = [
-                      '#keep',
-                      'input[name="keep"]',
-                      'input[type="checkbox"][id*="keep"]',
-                      'input[type="checkbox"][name*="keep"]'
-                    ];
-                    const keepLooksChecked = () => {
-                      for (const selector of candidates) {
-                        const checkbox = document.querySelector(selector);
-                        if (!checkbox) continue;
-                        const aria = String(checkbox.getAttribute('aria-checked') || '').toLowerCase();
-                        const cls = String(checkbox.className || '').toLowerCase();
-                        if (checkbox.checked || aria === 'true' || cls.includes('on') || cls.includes('checked')) {
-                          return true;
-                        }
-                      }
-                      return false;
-                    };
-                    for (const selector of candidates) {
-                      const checkbox = document.querySelector(selector);
-                      if (checkbox) {
-                        if (!checkbox.checked) checkbox.click();
-                        return true;
-                      }
-                    }
-                    const labels = [
-                      'label[for="keep"]',
-                      '.keep_text',
-                      '.keep_check',
-                      '[class*="keep"] label'
-                    ];
-                    for (const selector of labels) {
-                      const label = document.querySelector(selector);
-                      if (label) {
-                        if (!keepLooksChecked()) label.click();
-                        return true;
-                      }
-                    }
-                    const nodes = Array.from(document.querySelectorAll('label, span, strong, em, div, a, button'));
-                    for (const element of nodes) {
-                      const text = (element.innerText || element.textContent || '').replace(/\\s+/g, '');
-                      if (text.includes('로그인상태유지') || text.includes('Keepmeloggedin')) {
-                        if (!keepLooksChecked()) element.click();
-                        return true;
-                      }
-                    }
-                    return false;
-                }"""
-            )
-        )
-    except Exception:
-        return False
+    selectors = (
+        'input[type="checkbox"][id="loginStay"]',
+        'input[type="checkbox"][name="nvlong"]',
+        'input[type="checkbox"][id="keep"]',
+        'input[type="checkbox"][name="keep"]',
+    )
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            if not locator.count():
+                continue
+            checkbox = locator.first
+            if checkbox.is_checked(timeout=1_000):
+                return True
+            # Styled checkboxes can hide the input. Use its native label,
+            # which dispatches the site's normal change handlers.
+            control_id = checkbox.get_attribute("id")
+            label = page.locator(f'label[for="{control_id}"]') if control_id in {"loginStay", "keep"} else None
+            if label is not None and label.count() and label.first.is_visible(timeout=1_000):
+                label.first.click(timeout=1_500)
+            else:
+                checkbox.check(timeout=1_500)
+            return bool(checkbox.is_checked(timeout=1_000))
+        except Exception:
+            continue
+    return False
 
 
 def persist_naver_auth_cookies(context: Any, page: Any) -> bool:
-    """Store the current user's Naver auth pair in this same profile.
+    """Confirm Naver-issued persistence without changing cookie lifetimes.
 
-    This is the local profile-persistence behavior used by Mato Helper.  It
-    runs only after a normal, visible user login has produced a valid
-    ``NID_AUT``/``NID_SES`` pair in the active context.  The values never
-    leave that context, are never logged, and are only written back to the
-    exact Chrome profile that supplied them.  No other project's profile
-    folder or authentication data is read.
+    Chrome writes persistent cookies to this profile automatically. Giving a
+    session-only token an invented expiry does not enable Naver's keep-login
+    feature and can falsely report a restart-safe login. Normal login with
+    the verified keep-login control must supply the persistent credentials.
     """
 
-    if is_naver_login_required(page, context):
-        return False
-    has_required, persistent, auth = _auth_cookie_state(context)
-    if persistent:
-        return True
-    if not has_required:
-        return False
-
-    now = time.time()
-    promoted: list[dict[str, Any]] = []
-    for name in AUTH_COOKIE_NAMES:
-        cookie = auth.get(name)
-        if not cookie:
-            return False
-        raw_expiry = cookie.get("expires", -1)
-        try:
-            expires = float(raw_expiry if raw_expiry not in (None, "") else -1)
-        except (TypeError, ValueError):
-            expires = -1
-        # Only session-only cookies need local persistence. Never extend a
-        # server-specified expiry, including a still-valid near-expiry cookie.
-        if expires != -1:
-            continue
-        expires = now + (30 * 24 * 60 * 60)
-        item: dict[str, Any] = {
-            "name": name,
-            "value": str(cookie.get("value") or ""),
-            "domain": str(cookie.get("domain") or ".naver.com"),
-            "path": str(cookie.get("path") or "/"),
-            "expires": expires,
-            "httpOnly": bool(cookie.get("httpOnly", True)),
-            "secure": bool(cookie.get("secure", True)),
-        }
-        same_site = cookie.get("sameSite")
-        if same_site in {"Strict", "Lax", "None"}:
-            item["sameSite"] = same_site
-        promoted.append(item)
-
-    try:
-        if promoted:
-            context.add_cookies(promoted)
-        if promoted and page is not None:
-            page.wait_for_timeout(1_000)
-    except Exception:
-        return False
-    return has_naver_login(context, require_persistent=True)
+    return not is_naver_login_required(page, context) and has_naver_login(
+        context, require_persistent=True
+    )
 
 
 def persistent_login_ready(context: Any, page: Any) -> bool:
-    """Return a restart-safe Naver session for the same persistent profile."""
+    """Confirm persisted authentication; a real restart still verifies reuse."""
 
     return persist_naver_auth_cookies(context, page)
