@@ -65,6 +65,16 @@ For a user-owned post image workflow, run `prepare_image_datasets.py` only after
 
 ## MyRealTrip product contract
 
+### Multi-profile batch
+
+`parse_request.py` sets product `versions` to the number of unique requested profiles, in request order. `프로필 3개` expands to `[1,2,3]`, while `프로필3` selects `[3]`. Named profiles override a separate manuscript count. History persists the slots, mode, CPA flag and upload-request flag.
+
+Use `product_batch.py prepare --command-file <staging>/request.txt` for multiple profiles. Its returned parent directory contains `profiles/01_profile_N`, `profiles/02_profile_M`, etc. Each child request has exactly one profile and `versions: 1`; run the existing product pipeline independently in each child without changing its assignment. Thus the single-post validation and image provenance rules below remain unchanged. Read the child request instead of reparsing the original parent command.
+
+Once every child is generated/validated, `product_batch.py upload --run-dir <parent>` preflights all assignments and rejects duplicate bodies. `--execute --confirm <parent-run-id>` serially delegates to the existing uploader with each child run ID. Failures stop the batch; resume uses the same parent/children and existing verified upload state. `product_batch.py status --run-dir <parent>` exposes all per-profile states. Generation-only requests cannot upload; blind-evaluation articles cannot publicly publish. No source files, credentials or drafts are copied across browser profiles.
+
+For MyRealTrip review-evaluation writing, `experience.mode` is `user_experience` with user notes, otherwise `simulated_review`. The latter requires collected reviews and creates a fictional first-person blind-evaluation article. No disclosure is added to the reader-facing body. Each experience sentence maps to `review_indexes` and `evidence_terms` in `review_claims`, never user `experience_claims`. The finalizer checks the mode against the saved request and records `blind_evaluation: true` and `upload_scope: draft_only` in analysis. The unchanged manuscript and images use the normal writer/validation/profile draft-upload flow. The upload planner and execution preflight reject public publication for this mode, without silently downgrading publish to draft. This mode is the only exception to actual-experience-only wording below; Naver Shopping is unchanged.
+
 A canonical `https://experiences.myrealtrip.com/products/<id>`, validated `https://myrealt.rip/<code>`, or MyRealTrip marketing bridge URL selects the product branch. The parsed request has this durable shape and is passed to `history.create_run(..., request_fields=request)`:
 
 ```json

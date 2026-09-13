@@ -10,6 +10,8 @@ from _support import IsolatedMatoEnvironment, write_json
 import history
 import product_writing
 import write_posts
+import upload
+import parse_request
 
 
 class ProductWritingTests(unittest.TestCase):
@@ -157,7 +159,8 @@ class ProductWritingTests(unittest.TestCase):
         return {
             "title": "모델이 임의로 쓴 제목",
             "intro": [
-                "평점은 4.8점이며 후기 수는 181개이고 가격은 67,000원~, 일정은 6시간 소요로 안내됩니다."
+                "평점은 4.8점이며 후기 수는 181개이고 가격은 67,000원~, 일정은 6시간 소요로 안내됩니다.",
+                "사진과 함께 선택할 때 확인할 부분을 살펴봅니다.",
             ],
             "sections": [
                 {
@@ -233,6 +236,95 @@ class ProductWritingTests(unittest.TestCase):
         self.assertNotIn("부모님 걸음에 맞춰", serialized)
         self.assertNotIn("한국어 가이드가 친절", serialized)
         self.assertTrue(any(row["theme"] == "가족 동행" for row in result["themes"]))
+
+    def test_experience_mode_uses_real_notes_before_mrt_simulation(self) -> None:
+        self.assertEqual(product_writing.experience_mode({"source_type": "myrealtrip_product"}), "simulated_review")
+        self.assertEqual(product_writing.experience_mode({"source_type": "myrealtrip_product", "experience_notes": ["직접 이용했다"]}), "user_experience")
+        self.assertEqual(product_writing.experience_mode({"source_type": "naver_shopping_product"}), "informational")
+
+    def test_blind_evaluation_draft_mode_and_publication_guard(self) -> None:
+        for phrase in ("임시저장으로 발행", "임시발행", "임시저장"):
+            with self.subTest(phrase=phrase):
+                request = parse_request.parse_request("https://myrealt.rip/iZRp3d 프로필1 " + phrase)
+                self.assertEqual(request["mode"], "draft")
+                self.assertTrue(request["upload_requested"])
+                self.assertFalse(request["publish_authorized"])
+                upload._check_blind_evaluation_mode({"request": request}, "draft")
+                with self.assertRaisesRegex(ValueError, "draft upload only"):
+                    upload._check_blind_evaluation_mode({"request": request}, "publish")
+        actual = {"source_type": "myrealtrip_product", "experience_notes": ["직접 이용했다"]}
+        upload._check_blind_evaluation_mode({"request": actual}, "publish")
+        self.assertTrue(parse_request._explicit_publish("임시저장 말고 발행"))
+
+    def test_simulated_experience_requires_review_mapping_and_valid_indexes(self) -> None:
+        brief = {
+            "experience": {"mode": "simulated_review", "notes": []},
+            "review_context": [{"review_index": 1, "text": "차량 이동이 편했습니다."}],
+        }
+        post = {"intro": ["저는 차량 이동이 편했어요."], "sections": []}
+        with self.assertRaisesRegex(ValueError, "expanded review evidence"):
+            product_writing._validate_experience_claims(post, brief)
+        post["review_claims"] = [{"claim": post["intro"][0], "review_indexes": [1], "evidence_terms": ["차량 이동"]}]
+        self.assertEqual(product_writing._validate_experience_claims(post, brief), [])
+        post["review_claims"][0]["review_indexes"] = [1, 99]
+        with self.assertRaisesRegex(ValueError, "expanded review evidence"):
+            product_writing._validate_experience_claims(post, brief)
+
+    def test_legacy_first_person_flag_does_not_bypass_evidence(self) -> None:
+        with self.assertRaisesRegex(ValueError, "without user notes"):
+            product_writing._validate_experience_claims(
+                {"intro": ["저는 여행을 다녀왔어요."], "sections": []},
+                {"experience": {"notes": [], "title_aligned_first_person": True}},
+            )
+
+    def test_blind_simulation_preserves_body_and_internal_provenance(self) -> None:
+        run_dir = self._run()
+        request = dict(history.load_run(run_dir)["request"])
+        request["experience_notes"] = []
+        request["profiles"] = [2]
+        history.update_run(run_dir, {"request": request})
+        path, manifest = self._manifest(run_dir, ["gallery", "gallery", "gallery"])
+        brief = product_writing.build_product_writing_brief(
+            run_dir, self._facts(), manifest, self._visuals(3), image_manifest_path=path,
+        )
+        self.assertEqual(brief["experience"]["mode"], "simulated_review")
+        self.assertEqual(brief["profile_slot"], 2)
+        self.assertIn("가상", product_writing.render_overlay(brief))
+        post = self._post(2)
+        sentence = "저는 차량 이동이 편했어요."
+        post["intro"].append(sentence)
+        post["review_claims"] = [{"claim": sentence, "review_indexes": [1], "evidence_terms": ["차량 이동"]}]
+        finalized = product_writing.finalize_product_payload(run_dir, {"posts": [post]}, brief)
+        output = finalized["posts"][0]
+        self.assertEqual(output["intro"], post["intro"])
+        self.assertTrue(finalized["analysis"]["product_brief"]["blind_evaluation"])
+        self.assertEqual(finalized["analysis"]["product_brief"]["upload_scope"], "draft_only")
+        self.assertEqual(output["link_url"], request["product_url"])
+        self.assertEqual([row["file"] for row in output["image_placements"]], ["image_1.jpg", "image_2.jpg", "image_3.jpg"])
+        self.assertEqual(output["experience_claims"], [])
+        self.assertEqual(output["review_claims"][0]["review_indexes"], [1])
+        _title, rendered = write_posts.render_mato_post(output)
+        self.assertIn(sentence, rendered)
+        self.assertNotIn("검수", rendered)
+        self.assertNotIn("가상", rendered)
+        self.assertNotIn("blind_evaluation", rendered)
+        self.assertEqual(rendered.count(request["product_url"]), 2)
+        self.assertEqual(re.findall(r"\[(image_[1-9]\d*\.jpg)\]", rendered), ["image_1.jpg", "image_2.jpg", "image_3.jpg"])
+        upload._validate_text_image_flow(rendered.split("본문2:\n", 1)[1].splitlines())
+        brief["experience"]["mode"] = "informational"
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            product_writing.finalize_product_payload(run_dir, {"posts": [post]}, brief)
+
+    def test_simulation_requires_actual_collected_reviews(self) -> None:
+        run_dir = self._run()
+        request = dict(history.load_run(run_dir)["request"])
+        request["experience_notes"] = []
+        history.update_run(run_dir, {"request": request})
+        path, manifest = self._manifest(run_dir, ["gallery"])
+        facts = self._facts()
+        facts["reviews"] = []
+        with self.assertRaisesRegex(ValueError, "requires collected review text"):
+            product_writing.build_product_writing_brief(run_dir, facts, manifest, self._visuals(1), image_manifest_path=path)
 
     def test_booking_evidence_uses_substantive_clauses_not_policy_headers(self) -> None:
         facts = self._facts()
@@ -567,7 +659,7 @@ class ProductWritingTests(unittest.TestCase):
             {"index": index, "source_role": "gallery"}
             for index in range(1, 8)
         ]
-        with self.assertRaisesRegex(ValueError, "needs at least 3 paragraphs"):
+        with self.assertRaisesRegex(ValueError, "needs at least 4 paragraphs"):
             product_writing.deterministic_image_placements(self._post(2), images)
 
     def test_finalize_and_writer_render_exact_url_and_sequential_tags(self) -> None:

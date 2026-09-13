@@ -442,6 +442,16 @@ def _plan_signature(run_id: str, mode: str, slots: Sequence[int], assignments: S
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
+def _check_blind_evaluation_mode(run: Mapping[str, Any], mode: str) -> None:
+    request = run.get("request") or {}
+    if (
+        mode == "publish"
+        and request.get("source_type") == "myrealtrip_product"
+        and not any(str(note).strip() for note in (request.get("experience_notes") or []))
+    ):
+        raise ValueError("blind review evaluation supports draft upload only, not public publish")
+
+
 def build_upload_plan(run_dir: str | Path, profiles: str, mode: str) -> dict[str, Any]:
     directory = Path(run_dir).expanduser().resolve()
     run = load_run(directory)
@@ -453,6 +463,7 @@ def build_upload_plan(run_dir: str | Path, profiles: str, mode: str) -> dict[str
     normalized_mode = str(mode).lower()
     if normalized_mode not in MODES:
         raise ValueError("mode must be draft or publish")
+    _check_blind_evaluation_mode(run, normalized_mode)
     slots = parse_positive_slots(profiles)
     post_items = _load_post_items(directory, run)
     assignments_raw = round_robin_assign(post_items, slots)

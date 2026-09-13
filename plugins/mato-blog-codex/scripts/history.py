@@ -60,6 +60,10 @@ PRODUCT_SOURCE_TYPES = {PRODUCT_SOURCE_TYPE, NAVER_SHOPPING_PRODUCT_SOURCE_TYPE}
 PRODUCT_IMAGE_MODE = "all_unique_seller_product_images"
 PRODUCT_MAX_IMAGES = 80
 PRODUCT_REQUEST_FIELDS = {
+    "profiles",
+    "mode",
+    "upload_requested",
+    "cpa_oneq",
     "source_type",
     "channel",
     "product_url",
@@ -240,6 +244,20 @@ def _build_run_request(
                 "link_wait_ms": link_wait_ms,
             }
         )
+        if "profiles" in fields:
+            slots = fields["profiles"]
+            if not isinstance(slots, list) or any(type(slot) is not int or slot < 1 for slot in slots):
+                raise ValueError("profiles must be an array of positive integers")
+            request["profiles"] = list(dict.fromkeys(slots))
+        mode = str(fields.get("mode") or "draft")
+        if mode not in {"draft", "publish"}:
+            raise ValueError("mode must be draft or publish")
+        request["mode"] = mode
+        for key in ("upload_requested", "cpa_oneq"):
+            if key in fields:
+                if type(fields[key]) is not bool:
+                    raise ValueError(f"{key} must be boolean")
+                request[key] = fields[key]
     folder_label = cleaned_keyword or (
         "naver-shopping-product"
         if source_type == NAVER_SHOPPING_PRODUCT_SOURCE_TYPE

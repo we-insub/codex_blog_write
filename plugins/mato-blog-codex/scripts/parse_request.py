@@ -63,25 +63,41 @@ _PRODUCT_MAX_IMAGES = 80
 _CPA_ONEQ_RE = re.compile(r"(?:\bCPA\b|씨피에이)\s*(?:링크|원큐)?|원큐", re.IGNORECASE)
 
 
+def _explicit_publish(option_text: str) -> bool:
+    # '임시발행' and '임시저장으로 발행' mean a draft, not public publication.
+    # Leave '임시저장 말고 발행' intact so an actual publish request stays explicit.
+    public_options = re.sub(r"임시\s*(?:저장\s*으로\s*)?발행", "초안", option_text)
+    return bool(re.search(r"(?:자동\s*|바로\s*)?발행", public_options, re.IGNORECASE))
+
+
 def _parse_profiles(command: str) -> list[int]:
     # A Naver post URL ends in a numeric log number.  Strip URLs before
     # recognizing profile slots so ``.../224360981794 + 프로필2`` can never
     # turn the post number into a profile number.
     command = _without_urls(str(command or ""))
+    count_match = re.search(r"프로필\s*(\d+)\s*개", command)
+    command = re.sub(r"프로필\s*\d+\s*개", " ", command)
     patterns = (
         r"(?P<slots>\d+(?:\s*[,/]\s*\d+)*)\s*번?\s*프로필",
         r"프로필\s*(?P<slots>\d+(?:\s*[,/]\s*\d+)*)",
     )
-    for pattern in patterns:
-        match = re.search(pattern, command, re.IGNORECASE)
-        if not match:
-            continue
-        slots: list[int] = []
+    matches = sorted(
+        (match for pattern in patterns for match in re.finditer(pattern, command, re.IGNORECASE)),
+        key=lambda match: match.start(),
+    )
+    slots: list[int] = []
+    for match in matches:
         for value in re.split(r"\s*[,/]\s*", match.group("slots")):
             slot = int(value)
             if slot > 0 and slot not in slots:
                 slots.append(slot)
+    if slots:
         return slots
+    if count_match:
+        count = int(count_match.group(1))
+        if count < 1:
+            raise ValueError("profile count must be positive")
+        return list(range(1, count + 1))
     return []
 
 
@@ -299,9 +315,7 @@ def _parse_product_request(
     )
     compact = re.sub(r"\s+", "", channel_text).lower()
     upload_prohibited = bool(_UPLOAD_PROHIBITION_RE.search(option_text))
-    explicit_publish = bool(
-        re.search(r"(?:자동\s*|바로\s*)?발행", option_text, re.IGNORECASE)
-    )
+    explicit_publish = _explicit_publish(option_text)
     mode = "publish" if not upload_prohibited and explicit_publish else "draft"
     version_text = re.sub(
         r"(?:이미지|사진)\s*(?:은|는|을|를)?\s*(?:최대\s*)?\d+\s*(?:개|장)",
@@ -327,6 +341,8 @@ def _parse_product_request(
     if versions <= 0:
         raise ValueError("versions must be positive")
     profiles = _parse_profiles(option_text)
+    if profiles:
+        versions = len(profiles)
     if re.search(r"(?:구글|google)", compact, re.IGNORECASE):
         raise ValueError("상품 작성 v1은 네이버 채널만 지원합니다.")
     channel = "naver"
@@ -395,7 +411,7 @@ def parse_request(command: str) -> dict[str, Any]:
     compact = re.sub(r"\s+", "", option_text).lower()
     upload_prohibited = bool(_UPLOAD_PROHIBITION_RE.search(option_text))
     surface = "blog" if "블로그탭" in compact and "통합검색" not in compact else "integrated"
-    explicit_publish = bool(re.search(r"(?:자동\s*|바로\s*)?발행", option_text, re.IGNORECASE))
+    explicit_publish = _explicit_publish(option_text)
     mode = "publish" if not upload_prohibited and explicit_publish else "draft"
     versions_match = re.search(r"(?<!프로필\s)(\d+)\s*(?:개|가지|버전)", option_text)
     requested_versions = int(versions_match.group(1)) if versions_match else 10

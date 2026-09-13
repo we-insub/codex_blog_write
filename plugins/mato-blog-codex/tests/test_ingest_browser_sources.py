@@ -272,17 +272,23 @@ class NaturalLanguageRequestTests(unittest.TestCase):
         )
         self.assertEqual(result["keyword"], "염창 맛집")
         self.assertEqual(result["surface"], "integrated")
-        self.assertEqual(result["versions"], 3)
+        self.assertEqual(result["versions"], 1)
         self.assertEqual(result["profiles"], [1])
         self.assertEqual(result["mode"], "draft")
         self.assertTrue(result["upload_requested"])
 
-    def test_omitted_surface_and_count_default_to_integrated_and_ten(self) -> None:
+    def test_named_profile_defaults_to_one_manuscript(self) -> None:
         result = parse_request.parse_request('프로필1 "서울맛집"')
         self.assertEqual(result["keyword"], "서울맛집")
         self.assertEqual(result["surface"], "integrated")
-        self.assertEqual(result["versions"], 10)
+        self.assertEqual(result["versions"], 1)
         self.assertEqual(result["profiles"], [1])
+
+    def test_no_profiles_defaults_to_ten(self) -> None:
+        result = parse_request.parse_request('"서울맛집"')
+        self.assertEqual(result["profiles"], [])
+        self.assertEqual(result["versions"], 10)
+        self.assertFalse(result["upload_requested"])
 
     def test_parses_mobile_friendly_compact_request(self) -> None:
         result = parse_request.parse_request(
@@ -290,7 +296,7 @@ class NaturalLanguageRequestTests(unittest.TestCase):
         )
         self.assertEqual(result["keyword"], "서울 맛집")
         self.assertEqual(result["surface"], "blog")
-        self.assertEqual(result["versions"], 10)
+        self.assertEqual(result["versions"], 3)
         self.assertEqual(result["profiles"], [1, 2, 3])
         self.assertEqual(result["mode"], "draft")
         self.assertTrue(result["upload_requested"])
@@ -322,7 +328,7 @@ class NaturalLanguageRequestTests(unittest.TestCase):
 
         self.assertEqual(result["keyword"], "  통합검색 자동발행 9개 7번프로필  ")
         self.assertEqual(result["surface"], "blog")
-        self.assertEqual(result["versions"], 2)
+        self.assertEqual(result["versions"], 1)
         self.assertEqual(result["profiles"], [1])
         self.assertEqual(result["mode"], "draft")
         self.assertTrue(result["upload_requested"])
@@ -365,7 +371,7 @@ class NaturalLanguageRequestTests(unittest.TestCase):
         self.assertEqual(result["keyword"], "서울 맛집")
         self.assertEqual(result["profiles"], [1])
         self.assertEqual(result["surface"], "blog")
-        self.assertEqual(result["versions"], 10)
+        self.assertEqual(result["versions"], 1)
         self.assertEqual(result["mode"], "draft")
 
 
