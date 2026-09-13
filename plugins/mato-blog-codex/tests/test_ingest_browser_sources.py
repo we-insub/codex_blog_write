@@ -231,6 +231,19 @@ class NaturalLanguageRequestTests(unittest.TestCase):
         self.assertEqual(result["image_policy"]["max_images"], 24)
         self.assertTrue(result["image_policy"]["permission_confirmed"])
 
+    def test_cpa_oneq_link_and_profile_requests_a_single_draft_upload(self) -> None:
+        result = parse_request.parse_request(
+            "CPA 링크 https://myrealt.rip/iZRp3d 프로필1 작업"
+        )
+        self.assertEqual(result["source_type"], "myrealtrip_product")
+        self.assertTrue(result["cpa_oneq"])
+        self.assertEqual(result["product_url"], "https://myrealt.rip/iZRp3d")
+        self.assertEqual(result["profiles"], [1])
+        self.assertEqual(result["versions"], 1)
+        self.assertEqual(result["mode"], "draft")
+        self.assertTrue(result["upload_requested"])
+        self.assertTrue(result["image_policy"]["permission_confirmed"])
+
     def test_product_images_use_standing_approval(self) -> None:
         unconfirmed = parse_request.parse_request(
             'https://myrealt.rip/iZRp3d "나트랑 투어" 업체 이미지 모두 사용'

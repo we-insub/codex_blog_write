@@ -60,6 +60,7 @@ _PRODUCT_FIELD_NAMES = {
 
 _PRODUCT_IMAGE_MODE = "all_unique_seller_product_images"
 _PRODUCT_MAX_IMAGES = 80
+_CPA_ONEQ_RE = re.compile(r"(?:\bCPA\b|씨피에이)\s*(?:링크|원큐)?|원큐", re.IGNORECASE)
 
 
 def _parse_profiles(command: str) -> list[int]:
@@ -345,6 +346,11 @@ def _parse_product_request(
 
     return {
         "source_type": source_type,
+        # Keep the compact CPA wording visible to the orchestrator.  The
+        # product pipeline remains the source of truth; this flag only
+        # distinguishes the user-facing one-click entry point from a normal
+        # product request in history and workflow narration.
+        "cpa_oneq": bool(_CPA_ONEQ_RE.search(option_text)),
         "channel": channel,
         "product_url": product_url,
         # Kept for older run helpers; the URL is deliberately never used here.
